@@ -274,7 +274,8 @@ def _process_locked(start: int, end: int, max_images: int, scope: str) -> dict:
         return result
 
     timed_tool('prepare-images.py', ['--export-root', '/export', '--runtime-dir', '/work', '--start', str(start),
-               '--end', str(end), '--manifest', _container_path(manifest_path), '--pending-grace-seconds', str(grace)],
+               '--end', str(end), '--manifest', _container_path(manifest_path), '--pending-grace-seconds', str(grace),
+               '--exclude-message-ids', _container_path(message_ids_path)],
                'none', 240)
     manifest = json.loads(manifest_path.read_text())
     caption_manifest_path = job / 'caption-manifest.json'

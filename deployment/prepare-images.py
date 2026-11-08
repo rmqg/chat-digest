@@ -122,7 +122,7 @@ def _pick_media(message):
 
 
 def prepare(export_root, conversation_id, start, end, runtime_dir, *, pending_grace_seconds=DEFAULT_PENDING_GRACE_SECONDS,
-            now=None):
+            now=None, exclude_message_ids=frozenset()):
     now = int(time.time()) if now is None else now
     output = runtime_dir / "images" / "decoded"
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -133,6 +133,8 @@ def prepare(export_root, conversation_id, start, end, runtime_dir, *, pending_gr
     for message in messages:
         if message["type"] != "image":
             continue
+        if message.get("is_self") and str(message.get("message_id")) in exclude_message_ids:
+            continue  # a report this project sent earlier: not chat content, never sent to a vision model
         uid = message["message_uid"]
         item = {"message_uid": uid, "timestamp": message["timestamp"], "available": False, "download_required": False}
         status, media = _pick_media(message)
@@ -187,13 +189,21 @@ def main():
     parser.add_argument("--start", required=True)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--pending-grace-seconds", type=int, default=DEFAULT_PENDING_GRACE_SECONDS)
+    parser.add_argument("--exclude-message-ids", type=Path,
+                        help="JSON list of export message IDs this project sent (its own reports)")
     args = parser.parse_args()
     os.umask(0o077)
     project = settings.load_project(required=True)
     end = digest._parse_time(args.end, int(time.time()))
     start = digest._parse_time(args.start, end - 86400)
+    excluded = frozenset()
+    if args.exclude_message_ids:
+        values = json.loads(args.exclude_message_ids.read_text(encoding="utf-8"))
+        if not isinstance(values, list):
+            raise ValueError("excluded message ids must be a JSON array")
+        excluded = frozenset(str(value) for value in values)
     manifest = prepare(args.export_root, project["group"]["conversation_id"], start, end, args.runtime_dir,
-                       pending_grace_seconds=args.pending_grace_seconds)
+                       pending_grace_seconds=args.pending_grace_seconds, exclude_message_ids=excluded)
     path = args.manifest or args.runtime_dir / "image-manifest.json"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")

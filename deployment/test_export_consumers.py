@@ -110,6 +110,28 @@ class PrepareImagesTests(ExportFixture):
         cache = json.loads((runtime / "prepared-image-cache.json").read_text())
         self.assertIn(ok["message_uid"], cache)
 
+    def test_own_report_images_are_skipped_before_any_vision_call(self):
+        """The bot's own earlier reports (very tall PNGs) are not chat content and must never reach the
+        image stage; they are recognised by export message ID, not by fingerprint."""
+        self.root.mkdir(parents=True)
+        own = fx.add_media(self.root, png())
+        other = fx.add_media(self.root, png((0, 0, 200)))
+        rows = [{"id": "100001", "ts": 100, "sender_id": "u_bot", "is_self": True, "type": "image",
+                 "media": [{"kind": "image", "status": "ready", **own}]},
+                {"id": "100002", "ts": 101, "sender_id": "u_bot", "is_self": True, "type": "image",
+                 "media": [{"kind": "image", "status": "ready", **other}]},
+                {"id": "100003", "ts": 102, "sender_id": "u", "type": "image",
+                 "media": [{"kind": "image", "status": "ready", **other}]}]
+        fx.build_export(self.root, rows)
+        runtime = self.base / "work"
+        runtime.mkdir()
+        manifest = prepare.prepare(self.root, fx.CONVERSATION, 0, 1000, runtime, now=600,
+                                   exclude_message_ids=frozenset({"100001", "100003"}))
+        _c, messages = digest.chat_export.read_messages(self.root, fx.CONVERSATION, 0, 1000)
+        kept = {m["message_id"] for m in messages if m["message_uid"] in {item["message_uid"] for item in manifest}}
+        # 100001: own report, skipped. 100002: own image not in the list, kept. 100003: not self, kept.
+        self.assertEqual(kept, {"100002", "100003"})
+
 
 class AvatarTests(ExportFixture):
     def test_only_exported_avatar_files_are_used(self):
