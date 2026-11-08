@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ MAX_INPUT_CHARS = 12000
 MAX_SUMMARY_CHARS = 600
 MAX_UNCERTAINTIES = 3
 MAX_UNCERTAINTY_CHARS = 120
+MAX_RETRY_DELAY_SECONDS = 900
 PROMPT = (
     '你负责忠实概括图片OCR文字，输出简洁中文结构化摘要，目标约400个汉字。'
     '必须保留重要事实、准确数字、专名和限制；OCR低置信度时明确提示不确定。'
@@ -111,6 +113,13 @@ def _base(entry: dict) -> dict:
 def _summary_cache_key(text: str, provider: dict, low: bool) -> str:
     return _hash(json.dumps([_hash(text), provider['model'], provider['base_url'].rstrip('/'), PROMPT,
                              PROMPT_VERSION, _SELECTION_VERSION, low], ensure_ascii=False, separators=(',', ':')))
+
+
+def _failure_delay(provider_cooldowns: dict, provider: dict, minimum: float) -> tuple[float, int]:
+    """back off further while a provider keeps failing; a success clears it."""
+    record = provider_cooldowns.get(provider_key(provider), {})
+    failures = int(record.get('failures', 0) if isinstance(record, dict) else 0) + 1
+    return max(minimum, min(120 * 2 ** min(failures - 1, 8), MAX_RETRY_DELAY_SECONDS)), failures
 
 
 def process(rows: dict, config: dict, cache_dir: Path, max_items: int = 0,
@@ -255,19 +264,22 @@ def process(rows: dict, config: dict, cache_dir: Path, max_items: int = 0,
                 cache_key = _summary_cache_key(text, provider, low)
                 _cache_write(cache_dir / (cache_key + '.json'), value)
                 memo[cache_key] = value
+                if provider_cooldowns.pop(provider_key(provider), None) is not None:
+                    cooldown['providers'] = provider_cooldowns
+                    _cache_write(cooldown_path, cooldown)
                 break
             except urllib.error.HTTPError as exc:
                 value_cache_path = cache_dir / (_summary_cache_key(text, provider, low) + '.json')
                 value_configured_model = provider['model']
                 value_fallback_used = index > 0
                 retryable = is_fallback_error(exc)
-                retry = _retry_delay(exc.headers.get('Retry-After')) or 120
+                retry, failures = _failure_delay(provider_cooldowns, provider, _retry_delay(exc.headers.get('Retry-After')) or 120)
                 value = {'status': 'pending' if retryable else 'failed',
                          'reason': 'provider_http_' + str(exc.code),
                          'retry_at': int(time.time() + (retry if retryable else 3600))}
                 if retryable:
                     provider_cooldowns[provider_key(provider)] = {
-                        'retry_at': value['retry_at'], 'http_status': exc.code}
+                        'retry_at': value['retry_at'], 'http_status': exc.code, 'failures': failures}
                     cooldown['providers'] = provider_cooldowns
                     if index == 0:
                         cooldown.update({'retry_at': value['retry_at'], 'http_status': exc.code,
@@ -275,11 +287,12 @@ def process(rows: dict, config: dict, cache_dir: Path, max_items: int = 0,
                     _cache_write(cooldown_path, cooldown)
                 else:
                     break
-            except (urllib.error.URLError, TimeoutError, OSError):
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
                 value_cache_path = cache_dir / (_summary_cache_key(text, provider, low) + '.json')
+                retry, failures = _failure_delay(provider_cooldowns, provider, 120)
                 value = {'status': 'pending', 'reason': 'summary_transport_unavailable',
-                         'retry_at': int(time.time()) + 120}
-                provider_cooldowns[provider_key(provider)] = {'retry_at': value['retry_at']}
+                         'retry_at': int(time.time() + retry)}
+                provider_cooldowns[provider_key(provider)] = {'retry_at': value['retry_at'], 'failures': failures}
                 value_configured_model = provider['model']
                 value_fallback_used = index > 0
                 cooldown['providers'] = provider_cooldowns

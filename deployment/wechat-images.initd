@@ -5,9 +5,9 @@ STOP=10
 USE_PROCD=1
 
 
-SERVICE_ROOT=${WECHAT_DIGEST_ROOT:-/opt/wechat-digest}
+SERVICE_ROOT=${CHAT_DIGEST_ROOT:-/opt/wechat-digest}
 PROGRAM=$SERVICE_ROOT/deployment/realtime-images.py
-PYTHON=${WECHAT_DIGEST_PYTHON:-/usr/bin/python3}
+PYTHON=${CHAT_DIGEST_PYTHON:-/usr/bin/python3}
 start_service() {
 	[ -x "$PYTHON" ] || return 1
 	[ -f "$PROGRAM" ] || return 1

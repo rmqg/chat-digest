@@ -16,6 +16,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
 
+import chat_export
+import chat_send
 import settings
 ROOT = settings.ROOT
 RUNTIME = settings.RUNTIME
@@ -28,7 +30,6 @@ LOCK = DIGEST / "on-demand.lock"
 DELIVERY_LOCK = DIGEST / "delivery.lock"
 SCANNER = ROOT / "deployment" / "summary_commands.py"
 GENERATOR = ROOT / "deployment" / "run-digest.py"
-SENDER = ROOT / "deployment" / "send-report.py"
 CHAT_ID = settings.load_project().get("group", {}).get("id")
 REPORT_PREFIX = settings.load_project()["report_prefix"]
 POLL_SECONDS = 10
@@ -95,7 +96,7 @@ def _load(path: Path, default=None):
 
 
 def _storage_ready() -> bool:
-    mount = os.environ.get("WECHAT_DIGEST_STORAGE_MOUNT")
+    mount = os.environ.get("CHAT_DIGEST_STORAGE_MOUNT")
     return not mount or Path(mount).is_mount()
 
 
@@ -103,7 +104,7 @@ def _config() -> dict:
     project = _project()
     bot = settings.bot_settings(project)
     value = _load(CONFIG)
-    if value.get("chat_id") != project["group"]["id"] or value.get("bot_username") != bot["username"]:
+    if value.get("chat_id") != project["group"]["conversation_id"]:
         raise ValueError("trigger target and bot must match explicit project configuration")
     names = value.get("bot_names")
     if not isinstance(names, list) or not names or any(not isinstance(name, str) or not name for name in names):
@@ -117,27 +118,24 @@ def _config() -> dict:
 
 
 def _runtime_mounts():
-    selection = _load(RUNTIME / "selection.json")
-    source = selection.get("source_db_dir")
-    if not isinstance(source, str):
-        raise ValueError("selected source database unavailable")
-    settings.load_project(required=True)
-    image = settings.runtime_image("runtime")
-    return selection, image
-
-
-def _container_base(selection: dict, image: str, network: str = "none") -> list[str]:
     project = settings.load_project(required=True)
+    image = settings.runtime_image("runtime")
+    return settings.export_root(project), image
+
+
+def _container_base(export: Path, image: str, network: str = "none") -> list[str]:
+    project = settings.load_project(required=True)
+    if network != "none":
+        network = project["docker_network"]
     args = ["docker", "run", "--rm", "--pull", "never", "--read-only", "--user",
             f"{project['worker_uid']}:{project['worker_gid']}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--memory", "1g", "--cpus", "1", "--tmpfs", "/tmp:rw,nosuid,size=64m,mode=1777",
-            "--env", "PYTHONPATH=/source:/source/memory:/source/agent_console:/tool:/tool/vendor",
-            "--env", "WECHAT_DIGEST_CONFIG=/runtime/project.json", "--env", "TZ=" + project["timezone"], "--network", network]
-    mounts = [(ROOT / "memory", "/source/memory", True), (ROOT / "agent_console", "/source/agent_console", True),
+            "--env", "PYTHONPATH=/source/agent_console:/tool",
+            "--env", "CHAT_DIGEST_CONFIG=/runtime/project.json", "--env", "TZ=" + project["timezone"], "--network", network]
+    mounts = [(ROOT / "agent_console", "/source/agent_console", True),
               (ROOT / "assets", "/source/assets", True), (ROOT / "deployment", "/tool", True),
               (settings.CONFIG_PATH.resolve(), "/runtime/project.json", True),
-              (RUNTIME / "gui", "/config", True), (RUNTIME / "keyscan" / "all_keys.json", "/keys/all_keys.json", True),
-              (DIGEST, "/work", False), (RUNTIME / "selection.json", "/runtime/selection.json", True),
+              (export, "/export", True), (DIGEST, "/work", False),
               (RUNTIME / "gemini-model.json", "/models/gemini.json", True)]
     for src, dst, readonly in mounts:
         args += ["--mount", f"type=bind,src={src},dst={dst}" + (",readonly" if readonly else "")]
@@ -145,8 +143,8 @@ def _container_base(selection: dict, image: str, network: str = "none") -> list[
 
 
 def _container_call(argv: list[str], *, network="none", timeout=3600):
-    selection, image = _runtime_mounts()
-    return subprocess.run(_container_base(selection, image, network) + argv, cwd=ROOT,
+    export, image = _runtime_mounts()
+    return subprocess.run(_container_base(export, image, network) + argv, cwd=ROOT,
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -169,16 +167,8 @@ def _save_cursor_and_jobs(scan: dict) -> None:
 
 
 def _source_fingerprint() -> str:
-    selected = _load(RUNTIME / 'selection.json')['source_db_dir']
-    if not isinstance(selected, str) or not selected.startswith('/config/'):
-        raise ValueError('invalid selected account path')
-    gui = (RUNTIME / 'gui').resolve(strict=True)
-    source = (gui / selected[len('/config/'):]).resolve(strict=True)
-    if not source.is_relative_to(gui):
-        raise ValueError('selected account path escapes GUI storage')
-    paths = list((source / 'message').glob('message_*.db')) + list((source / 'message').glob('message_*.db-wal'))
-    values = [(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(paths)]
-    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+    project = settings.load_project(required=True)
+    return chat_export.fingerprint(settings.export_root(project), project["group"]["conversation_id"])
 
 
 def scan_once(config: dict) -> dict:
@@ -189,8 +179,8 @@ def scan_once(config: dict) -> dict:
     if scan_state.get('fingerprint') == fingerprint and time.time() - scan_state.get('scanned_at', 0) < 600:
         return {'status': 'idle', 'new_commands': 0}
     candidate_path = WORK / "scan.json"
-    args = ["/tool/summary_commands.py", "--scan", "--source-db-dir", _load(RUNTIME / "selection.json")["source_db_dir"],
-            "--bot-username", config["bot_username"], "--enabled-from", str(config["enabled_from"]),
+    args = ["/tool/summary_commands.py", "--scan", "--export-root", "/export",
+            "--enabled-from", str(config["enabled_from"]),
             "--cursor-file", "/work/summary-commands/cursor.json", "--output", "/work/summary-commands/scan.json"]
     for name in config["bot_names"]:
         args += ["--bot-name", name]
@@ -224,9 +214,12 @@ def _report_day(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp, ZoneInfo(_project()["timezone"])).date().isoformat()
 
 
-def _failure(job: dict, stage: str, *, retry=True) -> dict:
-    job.update(status="failed", stage=stage, updated_at=int(time.time()), next_attempt_at=int(time.time()) + 60 if retry else None)
-    job["attempts"] = int(job.get("attempts", 0)) + 1
+def _failure(job: dict, stage: str, *, retry=True, delay=None) -> dict:
+    # A fixed 60 seconds reran the whole pipeline hundreds of times a day; back off 60 s -> 900 s instead.
+    attempts = int(job.get("attempts", 0))
+    wait = delay if delay is not None else min(60 * 2 ** min(attempts, 8), 900)
+    job.update(status="failed", stage=stage, updated_at=int(time.time()), next_attempt_at=int(time.time()) + wait if retry else None)
+    job["attempts"] = attempts + 1
     _atomic_json(JOBS / f"{job['request_id']}.json", job)
     return {"status": "failed", "stage": stage, "request_id": job["request_id"]}
 
@@ -292,9 +285,9 @@ def _recover_on_demand_bundle(request_id: str, start: int, end: int) -> dict:
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                     or receipt.get("chat_id") != CHAT_ID or receipt.get("request_id") != request_id
                     or receipt.get("report_day") != _report_day(end)
-                    or not receipt.get("server_id") or receipt.get("png_sha256") != digest):
+                    or not receipt.get("send_request_id") or receipt.get("png_sha256") != digest):
                 raise ValueError(f"recovered {edition} receipt does not match its report artifact")
-            item.update(status="sent", server_id=str(receipt["server_id"]), sent_at=receipt["sent_at"])
+            item.update(status="sent", send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"])
         recovered[edition] = item
     return recovered
 
@@ -320,7 +313,7 @@ def process_job(path: Path) -> dict:
     bot = settings.bot_settings(project)
     if not bot["names"]:
         raise ValueError("project.bot.names is required for on-demand delivery")
-    CHAT_ID = project["group"]["id"]
+    CHAT_ID = project["group"]["conversation_id"]
     job = _load(path)
     request_id = job["request_id"]
     status = job.get("status")
@@ -329,15 +322,15 @@ def process_job(path: Path) -> dict:
     legacy_receipt = _load(root_receipt_path)
     if (legacy_receipt.get("status") == "sent" and "edition" not in legacy_receipt
             and legacy_receipt.get("chat_id") == CHAT_ID and legacy_receipt.get("request_id") == request_id
-            and legacy_receipt.get("server_id")):
+            and legacy_receipt.get("send_request_id")):
         if status != "sent":
-            job.update(status="sent", server_id=legacy_receipt["server_id"],
+            job.update(status="sent", send_request_id=legacy_receipt["send_request_id"],
                        sent_at=legacy_receipt.get("sent_at", now), updated_at=now)
             _atomic_json(path, job)
         return {"status": "sent", "request_id": request_id, "already_terminal": True}
     has_new_brief = (legacy_receipt.get("status") == "sent" and legacy_receipt.get("edition") == "brief"
                      and legacy_receipt.get("chat_id") == CHAT_ID and legacy_receipt.get("request_id") == request_id
-                     and legacy_receipt.get("server_id"))
+                     and legacy_receipt.get("send_request_id"))
     if status in {"sent", "unknown", "ignored"} and not isinstance(job.get("editions"), dict):
         if not (status == "sent" and has_new_brief):
             return {"status": status, "request_id": request_id}
@@ -404,10 +397,10 @@ def process_job(path: Path) -> dict:
                     receipt = _load(receipt_path)
                     if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                             or receipt.get("chat_id") != CHAT_ID or receipt.get("request_id") != request_id
-                            or not receipt.get("server_id") or not isinstance(receipt.get("png_sha256"), str)):
+                            or not receipt.get("send_request_id") or not isinstance(receipt.get("png_sha256"), str)):
                         raise ValueError
                     item.update(status="sent", png_sha256=receipt["png_sha256"],
-                                server_id=str(receipt["server_id"]), sent_at=receipt["sent_at"])
+                                send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"])
                     _atomic_json(path, job)
                 elif item.get("status") == "sent":
                     item.update(status="unknown", error="sent edition receipt is missing; automatic retry prohibited")
@@ -442,7 +435,16 @@ def process_job(path: Path) -> dict:
         result = subprocess.run([sys.executable, str(GENERATOR), "--start", str(start), "--end", str(end), "--request-id", request_id],
                                 cwd=ROOT, capture_output=True, text=True, timeout=3600)
         if result.returncode:
-            return _failure(job, "generate")
+            delay = None
+            if result.returncode == 2:
+                # The image stage said when it wants to run again; waiting less only repeats the same work.
+                try:
+                    pending = json.loads(result.stdout.strip().splitlines()[-1])
+                    if pending.get("status") == "images_pending" and isinstance(pending.get("next_attempt_at"), (int, float)):
+                        delay = max(60, min(int(pending["next_attempt_at"]) - int(time.time()), 900))
+                except (ValueError, IndexError, AttributeError):
+                    pass
+            return _failure(job, "generate", delay=delay)
         try:
             generated = json.loads(result.stdout.strip().splitlines()[-1])
             generated_editions = generated["editions"]
@@ -496,10 +498,10 @@ def process_job(path: Path) -> dict:
                 receipt = _load(receipt_path)
                 if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                         or receipt.get("chat_id") != CHAT_ID or receipt.get("request_id") != request_id
-                        or not receipt.get("png_sha256") or not receipt.get("server_id")):
+                        or not receipt.get("png_sha256") or not receipt.get("send_request_id")):
                     return _failure(job, "receipt-integrity")
                 item.update(status="sent", png_sha256=receipt["png_sha256"],
-                            server_id=str(receipt["server_id"]), sent_at=receipt["sent_at"])
+                            send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"])
                 _atomic_json(path, job)
                 continue
             if item.get("status") in {"unknown", "sending"}:
@@ -516,37 +518,31 @@ def process_job(path: Path) -> dict:
             job.update(status="sending", sending_edition=edition, updated_at=int(time.time()))
             _atomic_json(path, job)
             try:
-                sent = subprocess.run([sys.executable, str(SENDER), item["png"], "--send", "--chat-id", CHAT_ID],
-                                      cwd=ROOT, capture_output=True, text=True, timeout=180)
-            except subprocess.TimeoutExpired:
-                item.update(status="unknown", error="sender timed out; do not retry")
-                job.update(status="unknown", updated_at=int(time.time()))
+                send_cfg = chat_send.send_config(settings.load_project(required=True))
+            except chat_send.SendConfigError:
+                item.update(status="prepared", stage="send-config", next_attempt_at=now + 300)
+                job.update(status="prepared", next_attempt_at=now + 300, updated_at=int(time.time()))
                 _atomic_json(path, job)
-                return {"status": "unknown", "request_id": request_id, "edition": edition}
-            except OSError:
-                item.update(status="prepared", stage="sender-start", next_attempt_at=now + 60)
-                job.update(status="prepared", next_attempt_at=now + 60, updated_at=int(time.time()))
-                _atomic_json(path, job)
-                return {"status": "prepared", "request_id": request_id}
-            try:
-                confirmation = json.loads(sent.stdout.strip().splitlines()[-1])
-            except (json.JSONDecodeError, IndexError):
-                confirmation = {}
-            if (sent.returncode == 0 and confirmation.get("status") == "sent"
-                    and confirmation.get("confirmed") is True and confirmation.get("server_id")
-                    and confirmation.get("sha256") == item["png_sha256"]):
+                return {"status": "prepared", "request_id": request_id, "stage": "send-config"}
+            rid = chat_send.request_id("on-demand", CHAT_ID, request_id, edition, item["png_sha256"])
+            item["send_request_id"] = rid
+            _atomic_json(path, job)
+            confirmation = chat_send.send(send_cfg, rid=rid, image=Path(item["png"]))
+            if confirmation["status"] == "sent":
                 receipt = {"status": "sent", "edition": edition, "chat_id": CHAT_ID,
-                           "server_id": str(confirmation["server_id"]), "png_sha256": item["png_sha256"],
+                           "send_request_id": rid, "png_sha256": item["png_sha256"],
                            "sent_at": int(time.time()), "report_day": job["report_day"], "request_id": request_id}
                 _atomic_json(receipt_path, receipt)
-                item.update(status="sent", server_id=receipt["server_id"], sent_at=receipt["sent_at"])
+                item.update(status="sent", send_request_id=rid, sent_at=receipt["sent_at"])
                 job.update(status="prepared", updated_at=int(time.time()))
                 job.pop("next_attempt_at", None)
                 _atomic_json(path, job)
                 continue
-            if confirmation.get("status") == "failed" and confirmation.get("sent") is False and confirmation.get("before_submit") is True:
-                item.update(status="prepared", stage="send-before-submit", next_attempt_at=int(time.time()) + 60)
-                job.update(status="prepared", next_attempt_at=int(time.time()) + 60, updated_at=int(time.time()))
+            if confirmation["status"] in {"failed", "invalid"} and confirmation.get("before_submit") is True:
+                delay = 60 if confirmation["status"] == "failed" else 900
+                item.update(status="prepared", stage="send-before-submit", next_attempt_at=int(time.time()) + delay,
+                            confirmation=confirmation)
+                job.update(status="prepared", next_attempt_at=int(time.time()) + delay, updated_at=int(time.time()))
                 _atomic_json(path, job)
                 return {"status": "prepared", "request_id": request_id, "edition": edition}
             item.update(status="unknown", confirmation=confirmation)
@@ -559,7 +555,7 @@ def process_job(path: Path) -> dict:
         fcntl.flock(lock, fcntl.LOCK_UN)
         _retry_complete_notice(job)
         return {"status": "sent", "request_id": request_id,
-                "server_id": editions["brief"].get("server_id")}
+                "send_request_id": editions["brief"].get("send_request_id")}
     finally:
         lock.close()
 

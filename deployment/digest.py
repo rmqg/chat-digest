@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Build a portable digest from locally decrypted WeChat databases."""
+"""Build brief and review reports for one conversation of a chat-export/v1 directory."""
 from __future__ import annotations
 
 import argparse
 import collections
 import datetime as dt
 import hashlib
+import http.client
 import time
 import json
-import os
-import shutil
-import sqlite3
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 import re
@@ -22,162 +19,44 @@ from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(ROOT / "memory"))
 sys.path.insert(0, str(ROOT / "agent_console"))
 import settings
-import decrypt_sync
-import memory_ingest
-import message_parse
+import chat_export
+from model_fallback import providers as model_providers, identity as provider_identity, is_fallback_error
 from structured import parse_object, read_completion, CompletionReadError
 import daily_report as report_module
 
 
-def _is_own_notice(message: dict, hashes: set[str]) -> bool:
-    return (message.get('origin_source') == 1 and message.get('type') == 'text'
-            and hashlib.sha256(message['text'].encode('utf-8')).hexdigest() in hashes)
+def _is_own_report(message: dict, text_hashes: set[str], image_hashes: set[str], message_ids: set[str]) -> bool:
+    """Messages this project itself delivered earlier (reports, site notices) are not chat content."""
+    if not message.get('is_self'):
+        return False
+    if message.get('message_id') in message_ids:
+        return True
+    if message.get('type') == 'text' and hashlib.sha256((message.get('text') or '').encode('utf-8')).hexdigest() in text_hashes:
+        return True
+    if message.get('type') == 'image':
+        for item in message.get('media') or []:
+            if isinstance(item, dict) and item.get('sha256') in image_hashes:
+                return True
+    return False
 
 
-def _open_ro(path: Path) -> sqlite3.Connection:
-    uri = path.resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
-    conn.execute("PRAGMA query_only=ON")
-    return conn
-
-
-def _table_names(conn: sqlite3.Connection) -> set[str]:
-    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-
-
-def _decrypt(path: Path, root: Path, keys: dict, out_dir: Path) -> Path | None:
-    rel = path.relative_to(root).as_posix()
-    info = decrypt_sync.key_for_rel(keys, rel)
-    if not info:
-        return None
-    key = bytes.fromhex(info["enc_key"])
-    out = out_dir / rel
-    out.parent.mkdir(parents=True, exist_ok=True)
-    decrypt_sync.full_decrypt(path, out, key)
-    decrypt_sync.patch_wal(Path(str(path) + "-wal"), out, key)
-    if not decrypt_sync.verify_sqlite(out):
-        raise RuntimeError(f"Decrypted SQLite verification failed: {rel}")
-    for suffix in ("-wal", "-shm"):
-        Path(str(out) + suffix).unlink(missing_ok=True)
-    return out
-
-
-def _metadata_dbs(root: Path, keys: dict, out: Path) -> tuple[dict, dict, dict]:
-    contacts: dict = {}
-    sessions: dict = {}
-    dbs: dict[str, Path] = {}
-    for source in sorted(root.rglob("*.db")):
-        if decrypt_sync.should_skip_source_db(source.relative_to(root).as_posix()):
-            continue
-        rel = source.relative_to(root).as_posix()
-        info = decrypt_sync.key_for_rel(keys, rel)
-        if not info:
-            continue
-        base = source.name.lower()
-        if "contact" not in base and "session" not in base:
-            continue
-        decrypted = _decrypt(source, root, keys, out)
-        if not decrypted:
-            continue
-        dbs[rel] = decrypted
-        with _open_ro(decrypted) as conn:
-            tables = _table_names(conn)
-            if "contact" in tables:
-                contacts.update(memory_ingest.load_contact_names(decrypted))
-            if "SessionTable" in tables:
-                sessions.update(memory_ingest.load_sessions(decrypted))
-    return contacts, sessions, dbs
-
-
-def _load_keyfile(path: Path) -> dict:
-    with path.open(encoding="utf-8") as f:
-        keys = json.load(f)
-    if not isinstance(keys, dict):
-        raise ValueError("keys file must contain an object")
-    return {k: v for k, v in keys.items() if not str(k).startswith("_")}
-
-
-def _groups(root: Path, keys: dict, temp: Path) -> list[dict]:
-    contacts, sessions, dbs = _metadata_dbs(root, keys, temp)
-    out = []
-    for username, contact in contacts.items():
-        if username.endswith("@chatroom"):
-            out.append({"group_id": username, "name": contact.get("display_name") or username,
-                        "session": sessions.get(username, {})})
-    return sorted(out, key=lambda x: (x["name"], x["group_id"]))
-
-
-def _groups_for_source(root: Path, keys: dict, temp: Path) -> tuple[list[dict], dict, dict, dict[str, Path]]:
-    contacts, sessions, dbs = _metadata_dbs(root, keys, temp)
-    groups = [{"group_id": name, "name": contact.get("display_name") or name,
-               "session": sessions.get(name, {})}
-              for name, contact in contacts.items() if name.endswith("@chatroom")]
-    return sorted(groups, key=lambda x: (x["name"], x["group_id"])), contacts, sessions, dbs
-
-
-def select_group(groups: list[dict], group_name: str | None = None, group_id: str | None = None) -> dict:
-    if group_id:
-        found = [g for g in groups if g["group_id"] == group_id]
+def select_conversation(conversations: list[dict], name: str | None = None, conversation_id: str | None = None) -> dict:
+    if conversation_id:
+        found = [item for item in conversations if item["conversation_id"] == conversation_id]
         if len(found) != 1:
-            raise ValueError(f"group id not found: {group_id}")
+            raise ValueError(f"conversation id not found in export: {conversation_id}")
         return found[0]
-    if not group_name:
-        raise ValueError("an explicit group ID or exact group name is required")
-    found = [g for g in groups if g["name"] == group_name]
+    if not name:
+        raise ValueError("an explicit conversation ID or exact conversation name is required")
+    found = [item for item in conversations if item["name"] == name]
     if not found:
-        raise ValueError(f"group not found by exact name: {group_name}")
+        raise ValueError(f"conversation not found by exact name: {name}")
     if len(found) > 1:
-        ids = ", ".join(g["group_id"] for g in found)
-        raise ValueError(f"ambiguous exact group name {group_name!r}; specify --group-id: {ids}")
+        ids = ", ".join(item["conversation_id"] for item in found)
+        raise ValueError(f"ambiguous exact conversation name {name!r}; specify --conversation-id: {ids}")
     return found[0]
-
-
-def _message_rows(message_db: Path, username: str, contact_names: dict, start: int, end: int) -> list[dict]:
-    table = "Msg_" + __import__("hashlib").md5(username.encode()).hexdigest()
-    with _open_ro(message_db) as conn:
-        tables = _table_names(conn)
-        if table not in tables:
-            return []
-        cols = {r[1] for r in conn.execute(f"PRAGMA table_info([{table}])")}
-        needed = ["local_id", "server_id", "local_type", "real_sender_id", "create_time",
-                  "origin_source", "source", "message_content", "compress_content",
-                  "packed_info_data", "WCDB_CT_message_content"]
-        missing = [c for c in needed if c not in cols]
-        if missing:
-            raise RuntimeError(f"unsupported message schema in {message_db}: missing {missing}")
-        sql = f"SELECT {', '.join('[' + c + ']' for c in needed)} FROM [{table}] WHERE create_time>=? AND create_time<? ORDER BY create_time, local_id"
-        records = conn.execute(sql, (start, end)).fetchall()
-        sender_names = dict(conn.execute("SELECT rowid, user_name FROM Name2Id")) if "Name2Id" in tables else {}
-    results = []
-    for row in records:
-        data = dict(zip(needed, row))
-        body = memory_ingest.decompress_content(data["message_content"], data["WCDB_CT_message_content"])
-        packed = memory_ingest.decompress_content(data["compress_content"], None)
-        base_type, subtype = memory_ingest.split_msg_type(data["local_type"])
-        type_label = memory_ingest.msg_type_label(base_type)
-        sender, text = message_parse.message_index_text({
-            "message_content": body, "compress_content": packed, "source": data["source"],
-            "type_label": type_label})
-        data["decoded_content"] = body
-        data["decoded_compress"] = packed
-
-        shard = message_db.parent.name + "/" + message_db.name
-        uid = memory_ingest.content_hash(username, shard, table, data["local_id"], data["server_id"], data["create_time"])
-        author_id = sender or sender_names.get(data["real_sender_id"], "")
-        if type_label in {"system", "recall"}:
-            author_id = ""
-        author = contact_names.get(author_id, {}).get("display_name") or ("系统" if type_label in {"system", "recall"} else author_id or "未知成员")
-        results.append({"message_uid": uid, "source_database": shard, "local_id": data["local_id"], "server_id": data["server_id"],
-                        "timestamp": int(data["create_time"] or 0), "author_id": author_id,
-                        "author": author, "text": text, "raw_content": body, "type": type_label,
-                        "local_type": data["local_type"], "app_subtype": subtype,
-                        "origin_source": data["origin_source"], "_source": data})
-    return results
-
-
 
 
 def _quote_candidates(messages: list[dict]) -> list[dict]:
@@ -216,7 +95,8 @@ def _summary_diagnostic(directory, config, reason, response):
         return
     from web_context import _cache_write
     text = json.dumps({'reason': reason, 'response': response}, ensure_ascii=False)
-    text = text.replace(config['api_key'], '[REDACTED]')
+    for provider in model_providers(config):
+        text = text.replace(provider['api_key'], '[REDACTED]')
     text = re.sub(r'sk-[A-Za-z0-9_-]{16,}', '[REDACTED]', text)
     _cache_write(directory / ('summary-' + str(time.time_ns()) + '.json'), json.loads(text))
 
@@ -293,13 +173,47 @@ _SUMMARY_REVIEW_PROMPT = (
 
 
 
+IMAGE_REFUSED_TEXT = '（图片描述模型拒绝处理这张图片，内容未知）'
+IMAGE_MISSING_TEXT = '（导出里没有这张图片的原图，内容未知）'
+
+
 def _visible_messages(messages):
     fields = ('reference', 'timestamp', 'author', 'text', 'type', 'image_understanding', 'auxiliary_context')
-    visible = [{key: message[key] for key in fields if key in message} for message in messages]
-    for item in visible:
+    visible = []
+    for message in messages:
+        item = {key: message[key] for key in fields if key in message}
+        reply = message.get('reply_to')
+        if isinstance(reply, dict) and (reply.get('text') or reply.get('sender_name')):
+            item['reply_to'] = {'author': reply.get('sender_name') or '', 'text': reply.get('text') or ''}
         if isinstance(item.get('auxiliary_context'), dict):
             item['auxiliary_context'] = _model_auxiliary(item['auxiliary_context'])
+        visible.append(item)
     return visible
+
+
+def _attach_image_understanding(selected, image_understanding):
+    """Every image needs a verified description. Two terminal cases are marked instead of blocking forever:
+    a provider refused the image, or the export says the original is missing."""
+    from model_fallback import is_refused_image
+    for message in selected:
+        if message["type"] != "image":
+            continue
+        entry = image_understanding.get(message["message_uid"])
+        if is_refused_image(entry):
+            message["image_understanding"] = {"model": None, "source_quality": entry.get("source_quality"), "refused": True,
+                                               "description": IMAGE_REFUSED_TEXT, "visible_text": "", "facts": [],
+                                               "uncertainties": ["图片描述模型拒绝处理此图，内容未知，不要猜测"]}
+            continue
+        if isinstance(entry, dict) and entry.get("status") == "unavailable" and entry.get("source_quality") == "missing":
+            message["image_understanding"] = {"model": None, "source_quality": "missing", "missing": True,
+                                               "description": IMAGE_MISSING_TEXT, "visible_text": "", "facts": [],
+                                               "uncertainties": ["原图缺失，内容未知，不要猜测"]}
+            continue
+        if not (isinstance(entry, dict) and entry.get("status") == "success" and isinstance(entry.get("result"), dict)
+                and entry.get("source_quality") in {"original", "client_full"}):
+            raise ValueError("image context is incomplete for the selected report window")
+        message["image_understanding"] = {"model": entry.get("model"), "source_quality": entry.get("source_quality"),
+                                           **entry["result"]}
 
 
 def _cache_key(version, config, prompt_version, contents):
@@ -307,17 +221,28 @@ def _cache_key(version, config, prompt_version, contents):
                                     sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def _cached_result(path):
+def _cached_result(path, config=None):
     try:
         cached = json.loads(path.read_text(encoding='utf-8'))
-        return cached.get('result') if isinstance(cached, dict) else None
-    except (OSError, ValueError, TypeError):
+        if not isinstance(cached, dict):
+            return None
+        metadata = cached.get('provider')
+        if metadata is not None and config is not None:
+            allowed = {json.dumps(provider_identity(provider), sort_keys=True)
+                       for provider in model_providers(config)}
+            if json.dumps(metadata.get('configured'), sort_keys=True) not in allowed:
+                return None
+        return cached.get('result')
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
 
 
-def _save_result(path, fingerprint, result):
+def _save_result(path, fingerprint, result, provider=None):
     from web_context import _cache_write
-    _cache_write(path, {'input_sha256': fingerprint, 'created_at': int(time.time()), 'result': result})
+    value = {'input_sha256': fingerprint, 'created_at': int(time.time()), 'result': result}
+    if provider:
+        value['provider'] = provider
+    _cache_write(path, value)
 
 
 def _summary_with_cache(config_path, messages, runtime, *, edition):
@@ -336,11 +261,13 @@ def _summary_with_cache(config_path, messages, runtime, *, edition):
                                   'temperature': 0.2, 'max_tokens': 65536}, sort_keys=True, ensure_ascii=False)
     fingerprint = _cache_key('summary-semantic-v2-' + edition, request_config, semantic_config, contents)
     path = runtime / 'summary-cache' / (edition + '-' + fingerprint + '.json')
-    raw = _cached_result(path)
+    raw = _cached_result(path, config)
     cache_hit = raw is not None
+    provider_metadata = {}
     if not cache_hit:
         raw = _structured_request(config, _SUMMARY_SCHEMA, prompt, contents,
-                                  runtime / 'summary-diagnostics', 'wechat_group_' + edition)
+                                  runtime / 'summary-diagnostics', 'chat_group_' + edition,
+                                  result_metadata=provider_metadata)
     try:
         if not isinstance(raw, dict):
             raise ValueError('summary must be an object')
@@ -350,50 +277,66 @@ def _summary_with_cache(config_path, messages, runtime, *, edition):
         _summary_diagnostic(runtime / 'summary-diagnostics', config, 'summary validation: ' + str(exc), raw)
         raise
     if not cache_hit:
-        _save_result(path, fingerprint, raw)
+        _save_result(path, fingerprint, raw, provider_metadata.get('provider'))
     return validated
 
 
 
 
-def _structured_request(config, schema, prompt, contents, diagnostics_dir, name):
-    for key in ('base_url', 'model', 'api_key'):
-        if not isinstance(config.get(key), str) or not config[key].strip():
-            raise ValueError(f'model config requires non-empty {key}')
-    payload = {'model': config['model'], 'stream': True, 'stream_options': {'include_usage': True},
-               'temperature': 0.2, 'max_tokens': 65536,
-               'response_format': {'type': 'json_schema', 'json_schema': {'name': name, 'strict': True, 'schema': schema}},
-               'messages': [{'role': 'system', 'content': prompt},
-                            {'role': 'user', 'content': json.dumps(contents, ensure_ascii=False)}]}
-    request = urllib.request.Request(config['base_url'].rstrip('/') + '/chat/completions',
-        data=json.dumps(payload, ensure_ascii=False).encode(),
-        headers={'Authorization': 'Bearer ' + config['api_key'], 'Content-Type': 'application/json'}, method='POST')
-    try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            result = read_completion(response, deadline_seconds=720)
-    except CompletionReadError as exc:
-        _summary_diagnostic(diagnostics_dir, config, exc.category, exc.response)
-        raise RuntimeError('AI stream incomplete: ' + exc.category) from exc
-    except urllib.error.HTTPError as exc:
-        body = exc.read(256 * 1024).decode('utf-8', 'replace')
-        _summary_diagnostic(diagnostics_dir, config, 'http_' + str(exc.code), {'body': body, 'retry_after': exc.headers.get('Retry-After')})
-        raise RuntimeError('AI request failed with HTTP ' + str(exc.code)) from None
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        _summary_diagnostic(diagnostics_dir, config, 'transport', {'error_type': type(exc).__name__})
-        raise RuntimeError(f'AI request failed: {exc}') from exc
-    try:
-        choice = result['choices'][0]
-        if choice.get('finish_reason') == 'length':
-            raise ValueError('Model output was truncated; refusing an incomplete report')
-        if choice.get('finish_reason') == 'content_filter' or choice['message'].get('refusal'):
-            raise ValueError('Model declined the request; no fabricated summary is permitted')
-        content = choice['message']['content']
-        if isinstance(content, list):
-            content = ''.join(part['text'] for part in content if isinstance(part, dict) and isinstance(part.get('text'), str))
-        return parse_object(content)
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        _summary_diagnostic(diagnostics_dir, config, str(exc), result)
-        raise RuntimeError(f'AI returned invalid structured JSON: {exc}') from exc
+def _structured_request(config, schema, prompt, contents, diagnostics_dir, name, *, result_metadata=None):
+    provider_list = model_providers(config)
+    last_error = None
+    for provider in provider_list:
+        payload = {'model': provider['model'], 'stream': True, 'stream_options': {'include_usage': True},
+                   'temperature': 0.2, 'max_tokens': 65536,
+                   'response_format': {'type': 'json_schema', 'json_schema': {'name': name, 'strict': True, 'schema': schema}},
+                   'messages': [{'role': 'system', 'content': prompt},
+                                {'role': 'user', 'content': json.dumps(contents, ensure_ascii=False)}]}
+        request = urllib.request.Request(provider['base_url'].rstrip('/') + '/chat/completions',
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={'Authorization': 'Bearer ' + provider['api_key'], 'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                result = read_completion(response, deadline_seconds=720)
+        except CompletionReadError as exc:
+            _summary_diagnostic(diagnostics_dir, config, exc.category, exc.response)
+            if exc.category not in {'stream_transport', 'stream_deadline', 'response_deadline', 'stream_missing_finish',
+                                    'malformed_stream', 'malformed_response'}:
+                raise RuntimeError('AI stream incomplete: ' + exc.category) from exc
+            last_error = RuntimeError('AI stream incomplete: ' + exc.category)
+            continue
+        except urllib.error.HTTPError as exc:
+            body = exc.read(256 * 1024).decode('utf-8', 'replace')
+            _summary_diagnostic(diagnostics_dir, config, 'http_' + str(exc.code), {'body': body, 'retry_after': exc.headers.get('Retry-After')})
+            if not is_fallback_error(exc):
+                raise RuntimeError('AI request failed with HTTP ' + str(exc.code)) from None
+            last_error = RuntimeError('AI request failed with HTTP ' + str(exc.code))
+            continue
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+            _summary_diagnostic(diagnostics_dir, config, 'transport', {'error_type': type(exc).__name__})
+            if not is_fallback_error(exc):
+                raise RuntimeError('AI request failed') from exc
+            last_error = RuntimeError('AI request failed')
+            continue
+        try:
+            choice = result['choices'][0]
+            if choice.get('finish_reason') == 'length':
+                raise ValueError('Model output was truncated; refusing an incomplete report')
+            if choice.get('finish_reason') == 'content_filter' or choice['message'].get('refusal'):
+                raise ValueError('Model declined the request; no fabricated summary is permitted')
+            content = choice['message']['content']
+            if isinstance(content, list):
+                content = ''.join(part['text'] for part in content if isinstance(part, dict) and isinstance(part.get('text'), str))
+            parsed = parse_object(content)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            _summary_diagnostic(diagnostics_dir, config, str(exc), result)
+            raise RuntimeError(f'AI returned invalid structured JSON: {exc}') from exc
+        if result_metadata is not None:
+            result_metadata['provider'] = {'configured': provider_identity(provider),
+                                           'response_model': result.get('model') if isinstance(result.get('model'), str) else None}
+        return parsed
+    raise last_error or RuntimeError('AI request failed')
+
 
 
 
@@ -541,153 +484,131 @@ def _parse_time(value: str | int | None, fallback: int) -> int:
     return int(parsed.timestamp())
 
 
+
+
+def _json_list(path, pattern, what):
+    if not path:
+        return set()
+    values = json.loads(Path(path).read_text(encoding='utf-8'))
+    if not isinstance(values, list) or any(not isinstance(value, str) or not re.fullmatch(pattern, value) for value in values):
+        raise ValueError(f'{what} must be an array of strings')
+    return set(values)
+
+
 def _run(args: argparse.Namespace) -> int:
-    source = Path(args.source_db_dir).resolve()
-    if not source.is_dir():
-        raise ValueError(f"source DB directory does not exist: {source}")
-    keys = _load_keyfile(Path(args.keys))
+    root = Path(args.export_root).resolve()
+    manifest = chat_export.load_manifest(root)
+    conversations = chat_export.list_conversations(root)
+    if args.list_conversations:
+        print(json.dumps(conversations, ensure_ascii=False, indent=2))
+        return 0
+    project = settings.load_project(required=True)
     runtime = Path(args.runtime_dir).resolve()
     runtime.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix=".digest-", dir=runtime))
-    os.chmod(tmp, 0o700)
-    try:
-        groups, contacts, sessions, _metadata = _groups_for_source(source, keys, tmp / "decrypted")
-        if args.list_groups:
-            print(json.dumps(groups, ensure_ascii=False, indent=2))
-            return 0
-        project = settings.load_project(required=True)
-        selected_id = args.group_id or project["group"].get("id")
-        selected_name = args.group_name or project["group"].get("name")
-        group = select_group(groups, selected_name, selected_id)
-        now = int(dt.datetime.now().timestamp())
-        end = _parse_time(args.end, now)
+    selected_id = args.conversation_id or project["group"].get("conversation_id")
+    selected_name = args.conversation_name or project["group"].get("name")
+    conversation = select_conversation(conversations, selected_name, selected_id)
+    now = int(dt.datetime.now().timestamp())
+    end = _parse_time(args.end, now)
+    if getattr(args, 'request_id', None):
+        start = _parse_time(args.start, end)
+        if start >= end:
+            raise ValueError('on-demand start must be earlier than end')
+    else:
+        start = _parse_time(args.start, end - int(args.hours * 3600)) if args.start else end - int(args.hours * 3600)
+    _conversation, selected = chat_export.read_messages(root, conversation["conversation_id"], start, end, manifest=manifest)
+    text_hashes = _json_list(getattr(args, 'exclude_own_text_sha256', None), '[0-9a-f]{64}', 'excluded notice fingerprints')
+    image_hashes = _json_list(getattr(args, 'exclude_own_image_sha256', None), '[0-9a-f]{64}', 'excluded report image fingerprints')
+    message_ids = _json_list(getattr(args, 'exclude_message_ids', None), r'.{1,256}', 'excluded message ids')
+    before_exclusion = len(selected)
+    selected = [message for message in selected if not _is_own_report(message, text_hashes, image_hashes, message_ids)]
+    for index, message in enumerate(selected, 1):
+        message["reference"] = f"M{index:04d}"
+    image_understanding = {}
+    if args.image_understanding:
+        image_understanding = json.loads(Path(args.image_understanding).read_text(encoding="utf-8"))
+        if not isinstance(image_understanding, dict):
+            raise ValueError("image-understanding input must map message_uid to results")
+        _attach_image_understanding(selected, image_understanding)
+    if getattr(args, 'auxiliary_context', None):
+        auxiliary = json.loads(Path(args.auxiliary_context).read_text(encoding='utf-8'))
+        if not isinstance(auxiliary, dict):
+            raise ValueError('auxiliary context must map original message IDs to evidence')
+        for message in selected:
+            if message['message_uid'] in auxiliary:
+                message['auxiliary_context'] = auxiliary[message['message_uid']]
+    if selected:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {edition: pool.submit(_summary_with_cache, Path(args.model_config), selected, runtime, edition=edition)
+                       for edition in ('brief', 'review')}
+            summaries = {edition: future.result() for edition, future in futures.items()}
+    else:
+        empty = {"one_line": "此时间窗口内，导出里该会话没有新增消息。", "topics": [], "quotes": []}
+        summaries = {'brief': empty, 'review': empty}
+    from report_avatars import collect_avatars
+    avatar_ids = list(dict.fromkeys([m["author_id"] for m in selected if m["author_id"]]))
+    avatars = collect_avatars(root, conversation["conversation_id"], avatar_ids, manifest=manifest)
+    image_messages = [message for message in selected if message["type"] == "image"]
+    understood_images = [message for message in image_messages if isinstance(message.get("image_understanding"), dict)
+                         and not message["image_understanding"].get("refused") and not message["image_understanding"].get("missing")]
+    refused_images = sum(isinstance(message.get("image_understanding"), dict) and bool(message["image_understanding"].get("refused"))
+                         for message in image_messages)
+    missing_images = sum(isinstance(message.get("image_understanding"), dict) and bool(message["image_understanding"].get("missing"))
+                         for message in image_messages)
+    image_models = sorted({message["image_understanding"].get("model") for message in understood_images
+                           if message["image_understanding"].get("model")})
+    thumbnail_images = sum(message["image_understanding"].get("source_quality") == "thumbnail"
+                           for message in understood_images)
+    out = Path(args.output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    tz = ZoneInfo(project["timezone"])
+    stamp = dt.datetime.fromtimestamp(start, tz).strftime("%Y%m%d-%H%M")
+    base = project["report_prefix"] + "-" + (f"request-{args.request_id}" if getattr(args, 'request_id', None) else stamp)
+    editions = {}
+    report = {}
+    for edition in ('brief', 'review'):
+        summary = summaries[edition]
+        report = {"chat_username": conversation["conversation_id"], "chat_display": conversation["name"],
+                  "platform": manifest["source"]["platform"],
+                  "generated_at": dt.datetime.now().astimezone().isoformat(),
+                  "one_line": summary["one_line"], "stats": {},
+                  "topics": summary["topics"], "quotes": summary["quotes"]}
+        report["edition"] = edition
+        report["stats"]["messages"] = len(selected)
+        report["stats"]["excluded_own_reports"] = before_exclusion - len(selected)
+        enrich_report(report, selected, start, end, avatars)
+        report["stats"]["image_understood"] = len(understood_images)
+        report["window"] = {"start_unix": start, "end_unix_exclusive": end}
         if getattr(args, 'request_id', None):
-            start = _parse_time(args.start, end)
-            if start >= end:
-                raise ValueError('on-demand start must be earlier than end')
-        else:
-            start = _parse_time(args.start, end - int(args.hours * 3600)) if args.start else end - int(args.hours * 3600)
-        msgdbs = []
-        for path in sorted(source.rglob("*.db")):
-            rel = path.relative_to(source).as_posix()
-            if "message" not in path.name.lower() or decrypt_sync.should_skip_source_db(rel):
-                continue
-            if re.fullmatch(r"(?:biz_)?message_[0-9]+\.db", path.name) and not decrypt_sync.key_for_rel(keys, rel):
-                raise RuntimeError(f"message shard key is unavailable: {rel}")
-            if decrypt_sync.key_for_rel(keys, rel):
-                decrypted = _decrypt(path, source, keys, tmp / "decrypted")
-                if decrypted:
-                    msgdbs.append(decrypted)
-        if not msgdbs:
-            raise RuntimeError("no decrypted message databases found")
-        selected = []
-        for db in msgdbs:
-            selected.extend(_message_rows(db, group["group_id"], contacts, start, end))
-        excluded = set()
-        if args.exclude_server_ids:
-            values = json.loads(Path(args.exclude_server_ids).read_text(encoding="utf-8"))
-            if not isinstance(values, list):
-                raise ValueError("excluded server ids must be an array")
-            excluded = {str(value) for value in values}
-        notice_hashes = set()
-        if getattr(args, 'exclude_own_text_sha256', None):
-            values = json.loads(Path(args.exclude_own_text_sha256).read_text(encoding='utf-8'))
-            if not isinstance(values, list) or any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value) for value in values):
-                raise ValueError('excluded notice fingerprints must be SHA-256 strings')
-            notice_hashes = set(values)
-        before_exclusion = len(selected)
-        selected = [message for message in selected if str(message.get('server_id')) not in excluded
-                    and not _is_own_notice(message, notice_hashes)]
-        selected.sort(key=lambda message: (message["timestamp"], message["source_database"], message["local_id"], message["message_uid"]))
-        for index, message in enumerate(selected, 1):
-            message["reference"] = f"M{index:04d}"
-        image_understanding = {}
-        if args.image_understanding:
-            image_understanding = json.loads(Path(args.image_understanding).read_text(encoding="utf-8"))
-            if not isinstance(image_understanding, dict):
-                raise ValueError("image-understanding input must map message_uid to results")
-            for message in selected:
-                if message["type"] != "image":
-                    continue
-                entry = image_understanding.get(message["message_uid"])
-                if not (isinstance(entry, dict) and entry.get("status") == "success" and isinstance(entry.get("result"), dict)
-                        and entry.get("source_quality") in {"original", "client_full"}):
-                    raise ValueError("image context is incomplete for the selected report window")
-                message["image_understanding"] = {"model": entry.get("model"), "source_quality": entry.get("source_quality"),
-                                                   **entry["result"]}
-        if getattr(args, 'auxiliary_context', None):
-            auxiliary = json.loads(Path(args.auxiliary_context).read_text(encoding='utf-8'))
-            if not isinstance(auxiliary, dict):
-                raise ValueError('auxiliary context must map original message IDs to evidence')
-            for message in selected:
-                if message['message_uid'] in auxiliary:
-                    message['auxiliary_context'] = auxiliary[message['message_uid']]
-        if selected:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = {edition: pool.submit(_summary_with_cache, Path(args.model_config), selected, runtime, edition=edition)
-                           for edition in ('brief', 'review')}
-                summaries = {edition: future.result() for edition, future in futures.items()}
-        else:
-            empty = {"one_line": "此时间窗口内，本地已同步的该群记录没有新增消息。", "topics": [], "quotes": []}
-            summaries = {'brief': empty, 'review': empty}
-        from report_avatars import collect_avatars
-        avatar_ids = list(dict.fromkeys([group["group_id"], *[m["author_id"] for m in selected if m["author_id"]]]))
-        avatars = collect_avatars(source, keys, avatar_ids, runtime, decrypted_dir=tmp / "decrypted")
-        image_messages = [message for message in selected if message["type"] == "image"]
-        understood_images = [message for message in image_messages if isinstance(message.get("image_understanding"), dict)]
-        image_models = sorted({message["image_understanding"].get("model") for message in understood_images
-                               if message["image_understanding"].get("model")})
-        thumbnail_images = sum(message["image_understanding"].get("source_quality") == "thumbnail"
-                               for message in understood_images)
-        out = Path(args.output_dir).resolve()
-        out.mkdir(parents=True, exist_ok=True)
-        stamp = dt.datetime.fromtimestamp(start).strftime("%Y%m%d-%H%M")
-        project = settings.load_project(required=True)
-        base = project["report_prefix"] + "-" + (f"request-{args.request_id}" if getattr(args, 'request_id', None) else stamp)
-        editions = {}
-        for edition in ('brief', 'review'):
-            summary = summaries[edition]
-            report = {"chat_username": group["group_id"], "chat_display": group["name"],
-                      "generated_at": dt.datetime.now().astimezone().isoformat(),
-                      "one_line": summary["one_line"], "stats": {},
-                      "topics": summary["topics"], "quotes": summary["quotes"]}
-            report["edition"] = edition
-            report["stats"]["messages"] = len(selected)
-            report["stats"]["excluded_own_reports"] = before_exclusion - len(selected)
-            enrich_report(report, selected, start, end, avatars)
-            report["stats"]["image_understood"] = len(understood_images)
-            report["window"] = {"start_unix": start, "end_unix_exclusive": end}
-            if getattr(args, 'request_id', None):
-                report["request"] = {"kind": "on_demand", "id": args.request_id, "trigger_timestamp": end}
-            report["ai_summary_used"] = bool(selected)
-            report["media_understanding"] = {"images": {"total": len(image_messages), "understood": len(understood_images),
-                                                          "models": image_models, "thumbnail_limitations": thumbnail_images},
-                                             "voice": "not analyzed", "video": "not analyzed"}
-            stem = f"{base}-{edition}"
-            html_path.write_text(report_module.render_html(report), encoding="utf-8")
-            json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-            report_module.render_png_pillow(report, png_path)
-            editions[edition] = {"html": str(html_path), "json": str(json_path), "png": str(png_path)}
-        trace_path = out / f"{base}-editions.sources.json"
-        trace_path.write_text(json.dumps({"group_id": group["group_id"], "window": {"start_unix": start, "end_unix_exclusive": end},
-                                          "messages": [{k: v for k, v in m.items() if k != "_source"} for m in selected]},
-                                         ensure_ascii=False, indent=2), encoding="utf-8")
-        print(json.dumps({"editions": editions, "sources": str(trace_path),
-                          "stats": report["stats"]}, ensure_ascii=False))
-        return 0
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+            report["request"] = {"kind": "on_demand", "id": args.request_id, "trigger_timestamp": end}
+        report["ai_summary_used"] = bool(selected)
+        report["media_understanding"] = {"images": {"total": len(image_messages), "understood": len(understood_images),
+                                                      "models": image_models, "thumbnail_limitations": thumbnail_images,
+                                                      "refused": refused_images, "missing": missing_images},
+                                         "voice": "not analyzed", "video": "not analyzed"}
+        stem = f"{base}-{edition}"
+        html_path, json_path, png_path = out / f"{stem}.html", out / f"{stem}.json", out / f"{stem}.png"
+        html_path.write_text(report_module.render_html(report), encoding="utf-8")
+        json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_module.render_png_pillow(report, png_path)
+        editions[edition] = {"html": str(html_path), "json": str(json_path), "png": str(png_path)}
+    trace_path = out / f"{base}-editions.sources.json"
+    trace_path.write_text(json.dumps({"conversation_id": conversation["conversation_id"],
+                                      "window": {"start_unix": start, "end_unix_exclusive": end},
+                                      "messages": selected}, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"editions": editions, "sources": str(trace_path),
+                      "stats": report.get("stats", {})}, ensure_ascii=False))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-db-dir", required=True)
-    parser.add_argument("--keys", default="/keys/all_keys.json")
-    parser.add_argument("--runtime-dir", default="/runtime")
-    parser.add_argument("--output-dir", default="/runtime/reports")
-    parser.add_argument("--list-groups", action="store_true")
-    parser.add_argument("--group-name")
-    parser.add_argument("--group-id")
+    parser.add_argument("--export-root", required=True, help="chat-export/v1 directory (read-only)")
+    parser.add_argument("--runtime-dir", default="/work")
+    parser.add_argument("--output-dir", default="/reports")
+    parser.add_argument("--list-conversations", action="store_true")
+    parser.add_argument("--conversation-name")
+    parser.add_argument("--conversation-id")
     parser.add_argument("--hours", type=float, default=24)
     parser.add_argument("--start")
     parser.add_argument("--end")
@@ -695,8 +616,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-config")
     parser.add_argument("--image-understanding", help="private message_uid-to-image-description JSON input")
     parser.add_argument('--auxiliary-context', help='OCR and webpage evidence linked to original messages, never chat text')
-    parser.add_argument("--exclude-server-ids", help="private ledger of already published report messages")
-    parser.add_argument('--exclude-own-text-sha256', help='private fingerprints of self-authored website access notices')
+    parser.add_argument('--exclude-own-text-sha256', help='private fingerprints of self-sent site access notices')
+    parser.add_argument('--exclude-own-image-sha256', help='private fingerprints of self-sent report PNGs')
+    parser.add_argument('--exclude-message-ids', help='private export message ids of self-sent deliveries')
     return parser
 
 
@@ -711,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("on-demand --start and --end must be integer Unix timestamps")
         if int(args.start) >= int(args.end):
             raise SystemExit("on-demand --start must be earlier than --end")
-    if not args.list_groups and not args.model_config:
+    if not args.list_conversations and not args.model_config:
         raise SystemExit("--model-config is required; no default cloud API is used")
     try:
         return _run(args)

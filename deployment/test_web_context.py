@@ -32,21 +32,6 @@ class WebContextSafetyTests(unittest.TestCase):
             with self.assertRaises(web_context.UnsafeURL):
                 web_context._public_addresses("public.example", 443)
 
-    def test_database_context_uses_configured_group_identity(self):
-        group = {"group_id": "synthetic-group-id", "name": "Synthetic test group"}
-        fake_digest = types.SimpleNamespace(
-            _load_keyfile=lambda _path: {},
-            _groups_for_source=lambda *_args: ([group], {}, None, None),
-            select_group=unittest.mock.Mock(return_value=group),
-        )
-        project = {"group": {"id": group["group_id"], "name": group["name"]}}
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "message").mkdir()
-            with patch.dict(sys.modules, {"digest": fake_digest}), \
-                    patch.object(web_context.settings, "load_project", return_value=project):
-                self.assertEqual(web_context._database_messages(root, Path("synthetic-keys.json"), 0, 1, root), [])
-        fake_digest.select_group.assert_called_once_with([group], group["name"], group["group_id"])
 
     def test_html_extraction_excludes_active_and_navigation_content(self):
         title, text = web_context._extract(

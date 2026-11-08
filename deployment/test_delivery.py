@@ -8,13 +8,15 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+import fixture_chat_send as fcs
+
 MODULE = Path(__file__).with_name("daily-job.py")
 spec = importlib.util.spec_from_file_location("daily_job", MODULE)
 daily = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(daily)
 
 
-TEST_GROUP_ID = "fixture10000000000@chatroom"
+TEST_GROUP_ID = "g_fixture_delivery"
 TEST_GROUP_NAME = "Synthetic Delivery Fixture"
 TEST_PREFIX = "fixture-report"
 
@@ -22,7 +24,7 @@ class DeliveryStateTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        project = {"group": {"id": TEST_GROUP_ID, "name": TEST_GROUP_NAME}, "report_prefix": TEST_PREFIX,
+        project = {"group": {"conversation_id": TEST_GROUP_ID, "name": TEST_GROUP_NAME}, "send": fcs.CONFIG, "report_prefix": TEST_PREFIX,
                    "timezone": "Asia/Shanghai", "daily_hour": 5, "worker_uid": 1234, "worker_gid": 2345}
         config = patch.object(daily.settings, "load_project", return_value=project)
         config.start()
@@ -114,19 +116,18 @@ class DeliveryStateTests(unittest.TestCase):
                 "editions": prepared, "window": {"start_unix": start, "end_unix_exclusive": end}}))
             order = []
             def sender(command, **kwargs):
-                png = Path(command[2])
+                self.assertTrue(fcs.is_send(command))
+                png = Path(fcs.argument(command, "--image"))
                 edition = png.stem.rsplit("-", 1)[-1]
                 order.append(edition)
-                fingerprint = prepared[edition]["png_sha256"]
-                receipt = {"status": "sent", "confirmed": True, "server_id": "server-" + edition, "sha256": fingerprint}
-                return subprocess.CompletedProcess(command, 0, json.dumps(receipt), "")
+                return fcs.result(command, "sent")
             with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), patch.object(daily.subprocess, "run", side_effect=sender):
                 result = daily.run_tick(datetime(2026, 3, 4, 5, 0, tzinfo=daily.TZ))
             self.assertEqual(result["status"], "sent")
             self.assertEqual(order, ["brief", "review"])
             final_state = json.loads(state_path.read_text())
-            self.assertEqual(final_state["editions"]["brief"]["server_id"], "server-brief")
-            self.assertEqual(final_state["editions"]["review"]["server_id"], "server-review")
+            self.assertTrue(final_state["editions"]["brief"]["send_request_id"].startswith("cd-"))
+            self.assertNotEqual(final_state["editions"]["brief"]["send_request_id"], final_state["editions"]["review"]["send_request_id"])
             brief = json.loads((daily.RECEIPTS / "2026-03-04.json").read_text())
             review = json.loads((daily.RECEIPTS / "2026-03-04-review.json").read_text())
             self.assertEqual(brief["edition"], "brief")
@@ -180,13 +181,12 @@ class DeliveryStateTests(unittest.TestCase):
             def command_runner(command, **kwargs):
                 if command[1] == str(daily.GENERATOR):
                     return subprocess.CompletedProcess(command, 0, json.dumps(generated), "")
-                edition = Path(command[2]).stem.rsplit("-", 1)[-1]
+                self.assertTrue(fcs.is_send(command))
+                edition = Path(fcs.argument(command, "--image")).stem.rsplit("-", 1)[-1]
                 sends.append(edition)
                 if edition == "review" and sends.count("review") == 1:
-                    return subprocess.CompletedProcess(command, 1,
-                        json.dumps({"status": "failed", "sent": False, "before_submit": True}), "")
-                return subprocess.CompletedProcess(command, 0, json.dumps({"status": "sent", "confirmed": True,
-                    "server_id": "server-" + edition, "sha256": prepared[edition]["png_sha256"]}), "")
+                    return fcs.result(command, "failed")
+                return fcs.result(command, "sent")
             with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), patch.object(daily.subprocess, "run", side_effect=command_runner), patch.object(daily, "_process_site_notice", side_effect=lambda receipt: notices.append(receipt["edition"]) or {"status": "sent"}):
                 self.assertEqual(daily.run_tick(now)["status"], "failed")
                 self.assertEqual(json.loads(state_path.read_text())["editions"]["brief"]["status"], "sent")
@@ -214,13 +214,13 @@ class DeliveryStateTests(unittest.TestCase):
                 commands.append(command)
                 if command[1] == str(daily.GENERATOR):
                     return subprocess.CompletedProcess(command, 0, json.dumps(generated), "")
-                return subprocess.CompletedProcess(command, 1, json.dumps({"status": "unknown"}), "")
+                return fcs.result(command, "unknown")
             with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), patch.object(daily.subprocess, "run", side_effect=command_runner):
                 self.assertEqual(daily.run_tick(now)["status"], "unknown")
                 self.assertEqual(daily.run_tick(now)["status"], "unknown")
-            send_commands = [command for command in commands if command[1] == str(daily.SENDER)]
+            send_commands = [command for command in commands if fcs.is_send(command)]
             self.assertEqual(len(send_commands), 1)
-            self.assertTrue(send_commands[0][2].endswith("-brief.png"))
+            self.assertTrue(fcs.argument(send_commands[0], "--image").endswith("-brief.png"))
 
     def test_two_persisted_receipts_recover_before_notification_without_resend(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -234,7 +234,7 @@ class DeliveryStateTests(unittest.TestCase):
                 daily_path = daily.RECEIPTS / ("2026-03-04" + ("-review" if edition == "review" else "") + ".json")
                 daily_path.parent.mkdir(parents=True, exist_ok=True)
                 daily_path.write_text(json.dumps({"status": "sent", "edition": edition, "report_day": "2026-03-04",
-                    "chat_id": TEST_GROUP_ID, "server_id": "server-" + edition,
+                    "chat_id": TEST_GROUP_ID, "send_request_id": "cd-server-" + edition,
                     "png_sha256": prepared[edition]["png_sha256"], "sent_at": 1772571600, "confirmation": {}}))
             state_path.write_text(json.dumps({"report_day": "2026-03-04", "status": "sending", "editions": prepared,
                 "window": {"start_unix": start, "end_unix_exclusive": end}}))
@@ -258,7 +258,7 @@ class DeliveryStateTests(unittest.TestCase):
                 "editions": prepared, "window": {"start_unix": start, "end_unix_exclusive": end}}))
             daily.RECEIPTS.mkdir(parents=True, exist_ok=True)
             (daily.RECEIPTS / "2026-03-04.json").write_text(json.dumps({"status": "sent", "edition": "brief",
-                "report_day": "2026-03-04", "chat_id": TEST_GROUP_ID, "server_id": "brief-server",
+                "report_day": "2026-03-04", "chat_id": TEST_GROUP_ID, "send_request_id": "cd-brief-server",
                 "png_sha256": prepared["brief"]["png_sha256"], "sent_at": 1772571600, "confirmation": {}}))
             with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), patch.object(daily.subprocess, "run", side_effect=AssertionError("integrity failure must not regenerate")):
                 result = daily.run_tick(now)
@@ -277,14 +277,13 @@ class DeliveryStateTests(unittest.TestCase):
             state_path.write_text(json.dumps({"report_day": "2026-03-04", "status": "sending"}))
             daily.RECEIPTS.mkdir(parents=True, exist_ok=True)
             (daily.RECEIPTS / "2026-03-04.json").write_text(json.dumps({"status": "sent", "edition": "brief",
-                "report_day": "2026-03-04", "chat_id": TEST_GROUP_ID, "server_id": "brief-server",
+                "report_day": "2026-03-04", "chat_id": TEST_GROUP_ID, "send_request_id": "cd-brief-server",
                 "png_sha256": prepared["brief"]["png_sha256"], "sent_at": 1772571600, "confirmation": {}}))
             sends = []
             def sender(command, **kwargs):
-                sends.append(command[2])
-                self.assertEqual(command[1], str(daily.SENDER))
-                return subprocess.CompletedProcess(command, 0, json.dumps({"status": "sent", "confirmed": True,
-                    "server_id": "review-server", "sha256": prepared["review"]["png_sha256"]}), "")
+                self.assertTrue(fcs.is_send(command))
+                sends.append(fcs.argument(command, "--image"))
+                return fcs.result(command, "sent")
             with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), patch.object(daily.subprocess, "run", side_effect=sender):
                 result = daily.run_tick(now)
             self.assertEqual(result["status"], "sent")
@@ -294,7 +293,7 @@ class DeliveryStateTests(unittest.TestCase):
         receipt_path = daily.RECEIPTS / "2026-03-04.json"
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps({"status": "sent", "report_day": "2026-03-04",
-            "chat_id": TEST_GROUP_ID, "server_id": "legacy-server", "png_sha256": "old-hash"}))
+            "chat_id": TEST_GROUP_ID, "send_request_id": "cd-legacy-server", "png_sha256": "old-hash"}))
         with patch.object(daily.subprocess, "run", side_effect=AssertionError("legacy receipt is terminal")), patch.object(daily, "_process_site_notice") as notice:
             result = daily.run_tick(datetime(2026, 3, 4, 10, 0, tzinfo=daily.TZ))
         notice.assert_not_called()

@@ -22,7 +22,7 @@ class DigestConsumerRiskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'project.json'
             config.write_text(json.dumps({'timezone': 'America/Los_Angeles'}))
-            with patch.dict('os.environ', {'WECHAT_DIGEST_CONFIG': str(config)}):
+            with patch.dict('os.environ', {'CHAT_DIGEST_CONFIG': str(config)}):
                 summary = digest.validate_summary({'one_line': 'summary', 'topics': [],
                                                    'quotes': [{'message_id': 'M0001'}]}, messages)
                 report = digest.enrich_report({'stats': {}, **summary}, messages, start, start + 3600, {})
@@ -45,15 +45,6 @@ class DigestConsumerRiskTests(unittest.TestCase):
                 conn.execute(f"INSERT INTO [{table}] VALUES(?,NULL,?,7,?,1,NULL,'hello',NULL,NULL,0)", (index + 1, kind, stamp))
         return path
 
-    def test_exact_name_ambiguity_requires_group_id(self):
-        groups = [
-            {"group_id": "first@chatroom", "name": "Example Study Group"},
-            {"group_id": "second@chatroom", "name": "Example Study Group"},
-            {"group_id": "other@chatroom", "name": "example study group"},
-        ]
-        with self.assertRaises(ValueError):
-            digest.select_group(groups, group_name="Example Study Group")
-        self.assertEqual(digest.select_group(groups, group_id="second@chatroom"), groups[1])
 
     def test_quotes_are_backfilled_from_cited_source(self):
         source = {"message_uid": "m1", "reference": "M0001", "timestamp": 123, "author": "Ada", "text": "  exact original  "}
@@ -353,27 +344,8 @@ class DigestConsumerRiskTests(unittest.TestCase):
         digest.enrich_report(original, [message], 0, 3600, {}, text_is_original=True)
         self.assertEqual(original["participants"][0]["tokens"], body_token_count("[图片]"))
 
-    def test_time_window_is_start_inclusive_end_exclusive(self):
-        with tempfile.TemporaryDirectory() as root:
-            path = self.message_database(root, 0, [99, 100, 199, 200])
-            rows = digest._message_rows(path, "test@chatroom", {}, 100, 200)
-        self.assertEqual([row["timestamp"] for row in rows], [100, 199])
 
-    def test_numeric_author_resolution_and_system_participation(self):
-        with tempfile.TemporaryDirectory() as root:
-            path = self.message_database(root, 0, [100, 101], [1, 10000])
-            rows = digest._message_rows(path, "test@chatroom", {"wxid_test": {"display_name": "Ada"}}, 0, 200)
-        self.assertEqual(rows[0]["author"], "Ada")
-        self.assertEqual({row["author_id"] for row in rows if row["author_id"]}, {"wxid_test"})
-        self.assertEqual(rows[1]["author_id"], "")
 
-    def test_missing_server_ids_do_not_collide_across_shards(self):
-        with tempfile.TemporaryDirectory() as root:
-            first = self.message_database(root, 0, [100])
-            second = self.message_database(root, 1, [100])
-            a = digest._message_rows(first, "test@chatroom", {}, 0, 200)[0]
-            b = digest._message_rows(second, "test@chatroom", {}, 0, 200)[0]
-        self.assertNotEqual(a["message_uid"], b["message_uid"])
 
 
     def test_explicit_integer_timestamp_is_preserved_without_float_or_truncation(self):

@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-import xml.etree.ElementTree as ET
 
 import settings
 _SAFE_SHA = re.compile(r"^[0-9a-f]{64}$")
@@ -83,7 +82,7 @@ def _convert_to_png(src: Path, destination: Path, project_root: Path) -> None:
                '--read-only', '--user', f"{project['worker_uid']}:{project['worker_gid']}", '--cap-drop', 'ALL',
                '--security-opt', 'no-new-privileges:true', '--memory', '1g', '--cpus', '1',
                '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--env', 'PYTHONPATH=/tool',
-               '--env', 'WECHAT_DIGEST_CONFIG=/runtime/project.json']
+               '--env', 'CHAT_DIGEST_CONFIG=/runtime/project.json']
     for path, target, readonly in [(src, '/input', True), (destination, '/output.png', False),
                                    (project_root / 'deployment', '/tool', True),
                                    (project_root / 'runtime/project.json', '/runtime/project.json', True)]:
@@ -161,71 +160,21 @@ def _dependency_path(raw: str, reports_dir: Path) -> Path:
     elif not path.is_absolute():
         path = root / path
     return path
-def cached_images_by_md5(cache: dict, md5_values: list[str]) -> list[str]:
-    """Return locally available full-image UIDs matching message XML fingerprints."""
-    wanted = {value.lower() for value in md5_values if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{32}", value)}
-    matches = []
-    ranked = []
-    for uid, entry in cache.items():
-        item = entry.get('item') if isinstance(entry, dict) else None
-        if not isinstance(item, dict) or item.get('message_uid') != uid:
-            continue
-        if item.get('available') is not True or item.get('source_quality') not in ('original', 'client_full'):
-            continue
-        if item.get('download_required') is True or not isinstance(item.get('image_path'), str) or not item.get('image_path'):
-            continue
-        fingerprints = {str(item.get(key) or '').lower() for key in ('md5', 'original_md5', 'client_full_md5')}
-        if not wanted.intersection(fingerprints):
-            continue
-        quality_rank = 0 if item.get('source_quality') == 'original' else 1
-        ranked.append((quality_rank, uid))
-    for _, uid in sorted(ranked):
-        matches.append(uid)
-    return matches
-
-def _xml_root(raw: object) -> ET.Element | None:
-    if not isinstance(raw, str):
-        return None
-    start = raw.find('<')
-    if start < 0:
-        return None
-    try:
-        return ET.fromstring(raw[start:])
-    except ET.ParseError:
-        return None
+def _by_message_id(messages: list[dict]) -> dict[str, dict]:
+    return {str(message.get('message_id')): message for message in messages
+            if message.get('message_id') not in (None, '')}
 
 
-
-def _record_image_nodes(root: ET.Element | None):
-    if root is None:
-        return
-    for item in root.findall('.//recorditem'):
-        nested = _xml_root(item.text)
-        if nested is None:
-            nested = item.find('recordinfo')
-        if nested is not None:
-            for node in nested.findall('.//dataitem'):
-                if node.get('datatype') == '2':
-                    yield node
-
-
-def _record_image_md5s(root: ET.Element | None) -> list[str]:
-    found = []
-    for node in _record_image_nodes(root):
-        value = (node.findtext('fullmd5') or node.get('fullmd5') or '').strip()
-        if re.fullmatch(r'[0-9a-fA-F]{32}', value):
-            found.append(value)
-    return found
-
-
-def _has_record_image(root: ET.Element | None) -> bool:
-    return next(_record_image_nodes(root), None) is not None
+def _reply_target(message: dict, by_id: dict[str, dict]) -> dict | None:
+    reply = message.get('reply_to')
+    if isinstance(reply, dict) and reply.get('id') not in (None, ''):
+        return by_id.get(str(reply['id']))
+    return None
 
 
 def source_image_uids(messages: list[dict], cache: dict) -> dict[str, list[str]]:
-    """Map cited messages to image candidates; publication validates cached originals."""
-    by_server = {str(message.get('server_id')): message for message in messages
-                 if message.get('server_id') not in (None, '')}
+    """Map cited messages to image candidates: the image itself, or the image a reply quotes."""
+    by_id = _by_message_id(messages)
     by_uid = {message.get('message_uid'): message for message in messages
               if isinstance(message.get('message_uid'), str)}
 
@@ -233,60 +182,30 @@ def source_image_uids(messages: list[dict], cache: dict) -> dict[str, list[str]]
         uid = message.get('message_uid')
         if not isinstance(uid, str) or uid in visiting:
             return []
-        visiting = {*visiting, uid}
-        root = _xml_root(message.get('raw_content'))
-        kind = str(message.get('type') or '').lower()
-        if kind in {'image', 'img', '图片'}:
+        if str(message.get('type') or '').lower() == 'image':
             return [uid]
-        md5s = []
-        if root is not None:
-            appmsg = root.find('.//appmsg')
-            if appmsg is not None and appmsg.findtext('type') == '19':
-                md5s.extend(_record_image_md5s(appmsg))
-            if appmsg is not None and appmsg.findtext('type') == '57':
-                refer = appmsg.find('refermsg')
-                server_id = refer.findtext('svrid') if refer is not None else None
-                original = by_server.get(str(server_id)) if server_id else None
-                if original is not None:
-                    return find(original, visiting)
-        found = []
-        for md5 in md5s:
-            found.extend(cached_images_by_md5(cache, [md5]))
-        return list(dict.fromkeys(found))
+        original = _reply_target(message, by_id)
+        return find(original, {*visiting, uid}) if original is not None else []
 
     return {uid: find(message, set()) for uid, message in by_uid.items()}
 
+
 def source_image_requests(messages: list[dict]) -> dict[str, bool]:
-    """Mark messages whose own or recursively quoted content requests one or more images."""
+    """Mark messages whose own, quoted or forwarded content contains one or more images."""
+    by_id = _by_message_id(messages)
     by_uid = {message.get('message_uid'): message for message in messages
               if isinstance(message.get('message_uid'), str)}
-    by_server = {str(message.get('server_id')): message for message in messages
-                 if message.get('server_id') not in (None, '')}
 
     def requested(message: dict, visiting: set[str]) -> bool:
         uid = message.get('message_uid')
         if not isinstance(uid, str) or uid in visiting:
             return False
-        visiting = {*visiting, uid}
-        root = _xml_root(message.get('raw_content'))
-        kind = str(message.get('type') or '').lower()
-        if kind in {'image', 'img', '图片'}:
+        if str(message.get('type') or '').lower() == 'image':
             return True
-        if root is None:
-            return False
-        appmsg = root.find('.//appmsg')
-        if appmsg is None:
-            return False
-        app_type = appmsg.findtext('type')
-        placeholder = re.search(r'[\[【]\s*图片\s*[\]】]', str(message.get('text') or '')) is not None
-        if app_type == '19':
-            return _has_record_image(appmsg) or placeholder
-        if app_type == '57':
-            refer = appmsg.find('refermsg')
-            server_id = refer.findtext('svrid') if refer is not None else None
-            original = by_server.get(str(server_id)) if server_id else None
-            return (requested(original, visiting) if original else False) or placeholder
-        return False
+        if any(isinstance(entry, dict) and entry.get('type') == 'image' for entry in message.get('forward') or []):
+            return True
+        original = _reply_target(message, by_id)
+        return requested(original, {*visiting, uid}) if original is not None else False
 
     return {uid: requested(message, set()) for uid, message in by_uid.items()}
 

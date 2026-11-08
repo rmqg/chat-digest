@@ -4,21 +4,20 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(os.environ.get("WECHAT_DIGEST_ROOT", Path(__file__).resolve().parents[1])).expanduser().resolve()
-RUNTIME = Path(os.environ.get("WECHAT_DIGEST_RUNTIME_ROOT", ROOT / "runtime")).expanduser().resolve()
-CONFIG_PATH = Path(os.environ.get("WECHAT_DIGEST_CONFIG", RUNTIME / "project.json")).expanduser()
+ROOT = Path(os.environ.get("CHAT_DIGEST_ROOT", Path(__file__).resolve().parents[1])).expanduser().resolve()
+RUNTIME = Path(os.environ.get("CHAT_DIGEST_RUNTIME_ROOT", ROOT / "runtime")).expanduser().resolve()
+CONFIG_PATH = Path(os.environ.get("CHAT_DIGEST_CONFIG", RUNTIME / "project.json")).expanduser()
 
 
 DEFAULTS: dict[str, Any] = {
-    "report_prefix": "wechat-digest", "desktop_container": "wechat-digest-desktop",
+    "report_prefix": "chat-digest", "docker_network": "chat-digest_default",
     "public_url": None, "image_origin_host": None, "daily_hour": 5, "timezone": "Asia/Shanghai",
     "worker_uid": 1000, "worker_gid": 1000,
-    "images": {"runtime": "wechat-digest-runtime:1.2.4", "keyscan": "wechat-digest-runtime:1.2.4",
-               "desktop": "ghcr.io/nickrunning/wechat-selkies:0.0.12-minimal"},
+    "export": {"root": None},
+    "images": {"runtime": "chat-digest-runtime:2.0.0"},
 }
 
 
@@ -44,7 +43,7 @@ def runtime_image(name: str, root: Path | str = ROOT) -> str:
 
 def load_project(required: bool = False, root: Path | str = ROOT) -> dict[str, Any]:
     root = Path(root).expanduser().resolve()
-    configured = os.environ.get("WECHAT_DIGEST_CONFIG")
+    configured = os.environ.get("CHAT_DIGEST_CONFIG")
     path = Path(configured).expanduser() if configured else (CONFIG_PATH if root == ROOT else root / "runtime" / "project.json")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -55,40 +54,44 @@ def load_project(required: bool = False, root: Path | str = ROOT) -> dict[str, A
     if not isinstance(value, dict):
         raise ValueError("project configuration must be a JSON object")
     config = {**DEFAULTS, **value}
-    for field in ("group", "bot", "images"):
+    for field in ("group", "bot", "images", "export"):
         if not isinstance(config.get(field, {}), dict):
             raise ValueError(f"project {field} configuration must be an object")
     config["group"] = config.get("group", {})
     config["bot"] = config.get("bot", {})
     config["images"] = {**DEFAULTS["images"], **config.get("images", {})}
+    config["export"] = {**DEFAULTS["export"], **config.get("export", {})}
+    if "id" in config["group"] and "conversation_id" not in config["group"]:
+        raise ValueError("group.id is a v1 WeChat field; v2 reads chat-export/v1 and needs group.conversation_id "
+                         "(see docs/MIGRATION-v2.md)")
     if required:
-        for field in ("id", "name"):
+        for field in ("conversation_id", "name"):
             item = config["group"].get(field)
             if not isinstance(item, str) or not item.strip() or item.startswith("REPLACE_WITH_"):
                 raise ValueError(f"explicit group.{field} is required for this operation")
     return config
 
 
-
-def verify_desktop_container(config: dict[str, Any] | None = None) -> str:
+def export_root(config: dict[str, Any] | None = None) -> Path:
+    """Host path of the chat-export/v1 directory (read-only for this project)."""
     config = config or load_project()
-    container = config["desktop_container"]
-    expected = runtime_image("desktop")
-    result = subprocess.run(["docker", "container", "inspect", "--format", "{{.Image}}", container],
-                            check=True, capture_output=True, text=True, timeout=30)
-    actual = result.stdout.strip()
-    if actual != expected:
-        raise ValueError("running desktop container image does not match configured immutable desktop image")
-    return container
+    value = os.environ.get("CHAT_DIGEST_EXPORT_ROOT") or config.get("export", {}).get("root")
+    if not isinstance(value, str) or not value.strip() or value.startswith("REPLACE_WITH_"):
+        raise ValueError("export.root must name the chat-export/v1 directory")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
+
 
 
 def bot_settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     config = config or load_project(required=True)
     bot = config["bot"]
-    username = bot.get("username")
-    if not isinstance(username, str) or not username.strip() or username.startswith("REPLACE_WITH_"):
-        raise ValueError("explicit bot.username is required for sending")
     names = bot.get("names", [])
     if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() for name in names):
         raise ValueError("bot.names must be a list of non-empty strings")
-    return {"username": username, "names": names}
+    sender_ids = bot.get("sender_ids", [])
+    if not isinstance(sender_ids, list) or any(not isinstance(item, str) or not item for item in sender_ids):
+        raise ValueError("bot.sender_ids must be a list of export sender_id strings")
+    return {"names": names, "sender_ids": sender_ids}

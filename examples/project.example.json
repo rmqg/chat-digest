@@ -1,14 +1,22 @@
 {
+  "export": {
+    "root": "REPLACE_WITH_ABSOLUTE_PATH_OF_YOUR_CHAT_EXPORT_DIRECTORY"
+  },
   "group": {
-    "id": "REPLACE_WITH_YOUR_EXACT_GROUP_ID",
-    "name": "REPLACE_WITH_YOUR_EXACT_GROUP_NAME"
+    "conversation_id": "REPLACE_WITH_CONVERSATION_ID_FROM_list-conversations",
+    "name": "REPLACE_WITH_EXACT_CONVERSATION_NAME"
+  },
+  "send": {
+    "command": ["REPLACE_WITH_SENDER_COMMAND", "for example wechat-send"],
+    "to": "REPLACE_WITH_TARGET_CONVERSATION_NAME_OR_ID",
+    "timeout": 180
   },
   "bot": {
-    "username": "REPLACE_WITH_YOUR_BOT_ACCOUNT_ID",
-    "names": []
+    "names": [],
+    "sender_ids": []
   },
-  "report_prefix": "wechat-digest",
-  "desktop_container": "wechat-digest-desktop",
+  "report_prefix": "chat-digest",
+  "docker_network": "chat-digest_default",
   "public_url": null,
   "image_origin_host": null,
   "daily_hour": 5,
@@ -16,8 +24,7 @@
   "worker_uid": 1000,
   "worker_gid": 1000,
   "images": {
-    "runtime": "wechat-digest-runtime:1.2.4",
-    "keyscan": "wechat-digest-runtime:1.2.4",
-    "desktop": "ghcr.io/nickrunning/wechat-selkies:0.0.12-minimal"
-  }
+    "runtime": "chat-digest-runtime:2.0.0"
+  },
+  "image_pending_grace_seconds": 21600
 }

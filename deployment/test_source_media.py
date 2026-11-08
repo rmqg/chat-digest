@@ -112,65 +112,8 @@ class SourceMediaTests(unittest.TestCase):
             self.assertEqual(result.convert('RGB').getpixel((0, 0)), (34, 78, 120))
         self.assertEqual(image.read_bytes(), before)
 
-    def test_forwarded_images_quotes_cycles_and_thumb_fingerprint_rules(self):
-        hashes = ['1' * 32, '2' * 32, '3' * 32]
-        cache = {f'image-{index}': {'item': {'message_uid': f'image-{index}', 'available': True,
-                 'source_quality': 'original', 'image_path': f'/decoded/{index}.png', 'md5': digest}}
-                 for index, digest in enumerate(hashes)}
-        record = '<msg><appmsg><type>19</type><recorditem><recordinfo>' + ''.join(
-            f'<dataitem datatype="2" fullmd5="{digest}" thumbfullmd5="{("f" * 32)}"/>'
-            for digest in hashes) + '</recordinfo></recorditem><url>a&amp;b</url></appmsg></msg>'
-        messages = [
-            {'message_uid': 'forward', 'server_id': '10', 'type': 'appmsg', 'raw_content': record},
-            {'message_uid': 'quote-forward', 'server_id': '11', 'type': 'appmsg',
-             'raw_content': '<msg><appmsg><type>57</type><refermsg><svrid>10</svrid></refermsg></appmsg></msg>'},
-            {'message_uid': 'quote-cycle-a', 'server_id': '12', 'type': 'appmsg',
-             'raw_content': '<msg><appmsg><type>57</type><refermsg><svrid>13</svrid></refermsg></appmsg></msg>'},
-            {'message_uid': 'quote-cycle-b', 'server_id': '13', 'type': 'appmsg',
-             'raw_content': '<msg><appmsg><type>57</type><refermsg><svrid>12</svrid></refermsg></appmsg></msg>'},
-            {'message_uid': 'thumb-only', 'server_id': '14', 'type': 'appmsg',
-             'raw_content': '<msg><appmsg><type>19</type><recorditem><recordinfo>'
-                            '<dataitem datatype="2" thumbfullmd5="' + hashes[0] + '"/>'
-                            '</recordinfo></recorditem></appmsg></msg>'},
-        ]
-        resolved = source_media.source_image_uids(messages, cache)
-        expected = ['image-0', 'image-1', 'image-2']
-        self.assertEqual(resolved['forward'], expected)
-        self.assertEqual(resolved['quote-forward'], expected)
-        self.assertEqual(resolved['quote-cycle-a'], [])
-        self.assertEqual(resolved['quote-cycle-b'], [])
-        self.assertEqual(resolved['thumb-only'], [])
 
-    def test_escaped_forward_child_md5_preserves_xml_entities_and_missing_image_signal(self):
-        digest = 'a' * 32
-        nested = ('<recordinfo><dataitem datatype="2"><fullmd5>' + digest + '</fullmd5>'
-                  '<thumbfullmd5>' + 'b' * 32 + '</thumbfullmd5></dataitem>'
-                  '<dataitem datatype="1"><datadesc>https://example.invalid/?a=1&amp;b=2</datadesc></dataitem>'
-                  '</recordinfo>')
-        forward = '<msg><appmsg><type>19</type><recorditem>' + html.escape(nested) + '</recorditem></appmsg></msg>'
-        messages = [{'message_uid': 'forward', 'server_id': '10', 'type': 'link_or_file', 'raw_content': forward},
-                    {'message_uid': 'reply', 'server_id': '11', 'type': 'link_or_file',
-                     'raw_content': '<msg><appmsg><type>57</type><refermsg><svrid>10</svrid></refermsg></appmsg></msg>'}]
-        image = self._image('full.png', 'PNG')
-        cache = self._cache(image, uid='original')
-        cache['original']['item']['md5'] = digest
-        self.assertEqual(source_media.source_image_uids(messages, cache),
-                         {'forward': ['original'], 'reply': ['original']})
-        self.assertEqual(source_media.source_image_uids(messages, {}), {'forward': [], 'reply': []})
-        self.assertEqual(source_media.source_image_requests(messages), {'forward': True, 'reply': True})
 
-    def test_forward_placeholder_without_attachment_does_not_invent_an_image(self):
-        messages = [
-            {'message_uid': 'forward', 'server_id': '1', 'type': 'link_or_file', 'text': '转发内容[图片]',
-             'raw_content': '<msg><appmsg><type>19</type><recorditem><recordinfo><dataitem datatype="1"/></recordinfo></recorditem></appmsg></msg>'},
-            {'message_uid': 'reply', 'server_id': '2', 'type': 'link_or_file', 'text': '引用[图片]',
-             'raw_content': '<msg><appmsg><type>57</type><refermsg><svrid>1</svrid></refermsg></appmsg></msg>'},
-            {'message_uid': 'ordinary-text', 'type': 'text', 'text': '我写了[图片]这几个字'},
-        ]
-        self.assertEqual(source_media.source_image_uids(messages, {}),
-                         {'forward': [], 'reply': [], 'ordinary-text': []})
-        self.assertEqual(source_media.source_image_requests(messages),
-                         {'forward': True, 'reply': True, 'ordinary-text': False})
 
     def test_image_candidates_are_deduplicated_and_cache_escape_is_rejected(self):
         image = self._image('shared.png', 'PNG')

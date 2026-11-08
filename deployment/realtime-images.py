@@ -4,12 +4,11 @@ import argparse
 import fcntl
 import json
 import os
-from pathlib import Path
 import signal
 import sys
 import tempfile
 import time
-from datetime import datetime, time as datetime_time, timedelta, timezone
+from datetime import datetime, time as datetime_time, timedelta
 
 import hashlib
 from zoneinfo import ZoneInfo
@@ -22,6 +21,8 @@ STATE = DIGEST / "realtime-images-state.json"
 LOCK = DIGEST / "realtime-images.lock"
 POLL_SECONDS = 15
 RECHECK_SECONDS = 600
+# New messages arrive constantly; without a gap the whole window would be reprocessed back to back.
+MIN_GAP_SECONDS = 120
 TZ = ZoneInfo(settings.load_project().get("timezone", "Asia/Shanghai"))
 STOP = False
 
@@ -63,34 +64,11 @@ def _storage_ready():
     return RUNTIME.is_dir()
 
 
-def _source_dir():
-    selection = json.loads((RUNTIME / "selection.json").read_text(encoding="utf-8"))
-    selected = selection.get("source_db_dir")
-    if not isinstance(selected, str) or not selected.startswith("/config/"):
-        raise ValueError("invalid selected account path")
-    relative = Path(selected[len("/config/"):])
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError("invalid selected account path")
-    gui = (RUNTIME / "gui").resolve(strict=True)
-    source = (gui / relative).resolve(strict=True)
-    if not source.is_dir() or not source.is_relative_to(gui):
-        raise ValueError("selected account path is outside GUI data")
-    return source
-
-
 def _fingerprint():
-    source = _source_dir()
-    paths = []
-    message = source / "message"
-    if message.is_dir():
-        for path in message.iterdir():
-            if path.name.startswith("message_") and (path.name.endswith(".db") or path.name.endswith(".db-wal")):
-                paths.append(path)
-    resource = message / "message_resource.db"
-    paths.extend((resource, Path(str(resource) + "-wal")))
-    paths.extend((RUNTIME / "gemini-model.json", RUNTIME / "vision-qwen.json"))
-    details = []
-    for path in sorted(set(paths), key=lambda value: value.name):
+    import chat_export
+    project = settings.load_project(required=True)
+    details = [chat_export.fingerprint(settings.export_root(project), project["group"]["conversation_id"])]
+    for path in (RUNTIME / "gemini-model.json", RUNTIME / "vision-qwen.json"):
         try:
             stat = path.stat()
             details.append((path.name, stat.st_mtime_ns, stat.st_size))
@@ -117,6 +95,9 @@ def process_once(state=None, force=False):
     due = not state.get("next_attempt_at") or now >= int(state["next_attempt_at"])
     recheck_due = now - int(state.get("last_scan", 0)) >= RECHECK_SECONDS
     if not force and not changed and not recheck_due and (pending is None or not due):
+        return state, False
+    if (not force and changed and not recheck_due and now - int(state.get("last_scan", 0)) < MIN_GAP_SECONDS
+            and (pending is None or not due)):
         return state, False
     start, end = _window(now)
     if pending is not None:
@@ -153,7 +134,7 @@ def process_once(state=None, force=False):
         # Deliberately omit exception text: it may contain private paths or URLs.
         state.update(last_scan=now, source_fingerprint=fingerprint,
                      pending_start=min(start, int(pending)) if pending is not None else start,
-                     last_error=type(exc).__name__, last_status="failed", next_attempt_at=now + 60)
+                     last_error=getattr(exc, "label", type(exc).__name__), last_status="failed", next_attempt_at=now + 60)
     _save_state(state)
     return state, True
 

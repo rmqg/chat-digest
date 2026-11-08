@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timedelta
 import fcntl
 import json
+import re
 import os
 from pathlib import Path
 import tempfile
@@ -23,6 +24,7 @@ STATE = RUNTIME / "daily-watchdog" / "state.json"
 DELIVERY = RUNTIME / "digest" / "delivery-state.json"
 
 
+FAULTS = {"failed", "unknown", "overdue", "unreadable"}
 STAGES = {"generate": "生成", "generation-output": "完整性校验", "integrity": "完整性校验",
           "send": "发送", "sending": "发送", "receipt": "回执确认", "unknown": "回执确认",
           "overdue": "超期", "state-read": "状态读取", "delivery-state-read": "状态读取", "unreadable": "状态读取",
@@ -31,10 +33,10 @@ STAGES = {"generate": "生成", "generation-output": "完整性校验", "integri
           "receipt_confirmation": "回执确认", "worker_start": "worker启动", "worker_receipt": "worker回执",
           "worker_timeout": "worker超时", "host_preparation": "宿主准备", "artifact_validation": "产物校验",
           "image_delivery": "图片发送", "text_delivery": "文本发送", "source_validation": "来源校验",
-          "submit": "提交"}
+          "submit": "提交", "send-config": "发送配置"}
 
 def _machine_label() -> str:
-    value = os.environ.get("WECHAT_DIGEST_MACHINE") or os.uname().nodename.split(".")[0]
+    value = os.environ.get("CHAT_DIGEST_MACHINE") or os.uname().nodename.split(".")[0]
     if not value or len(value) > 64 or not all(char.isalnum() or char in "._-" for char in value):
         return "machine-unknown"
     return value
@@ -88,6 +90,11 @@ def _diagnostic(delivery: dict, status: str, day: str) -> str:
         stage_label = stage if (isinstance(stage, str) and 0 < len(stage) <= 48
                                 and stage.isascii() and stage.replace("_", "").isalnum()) else "阶段未知"
     error_type = confirmation.get("error_type") or delivery.get("error_type") or item.get("error_type")
+    failure_text = delivery.get("error") or (item.get("error") if isinstance(item, dict) else None)
+    if not error_type and isinstance(failure_text, str):
+        # Generation failures have no structured field; recognize the type from the error text.
+        match = re.search(r"AI stream incomplete: (\w+)|\b(\w+(?:Error|Exception|Timeout))\b", failure_text)
+        error_type = (match.group(1) or match.group(2)) if match else None
     if not isinstance(error_type, str) or len(error_type) > 80 or not error_type.replace("_", "").isalnum():
         error_type = "未知"
     evidence = "runtime/daily-watchdog/state.json" if stage == "state-read" or status == "overdue" else "runtime/digest/delivery-state.json"
@@ -96,11 +103,15 @@ def _diagnostic(delivery: dict, status: str, day: str) -> str:
             f"位置 {where}，原因类型 {error_type}；证据 {evidence}。")[:400]
 
 
+def _failure_context(delivery: dict, status: str, day: str) -> dict:
+    return {"text": _diagnostic(delivery, status, day), "status": status, "report_day": day}
+
+
 def _defaults() -> dict:
     project = settings.load_project()
-    return {"group": "WeChat-Daily", "fail_level": "active", "recovery_level": "passive",
+    return {"group": "chat-digest", "fail_level": "active", "recovery_level": "passive",
             "daily_hour": int(project["daily_hour"]), "daily_minute": 0,
-            "timezone": project["timezone"], "overdue_minutes": 60}
+            "timezone": project["timezone"], "overdue_minutes": 60, "fault_grace_minutes": 10}
 
 
 def read_json(path: Path) -> dict:
@@ -119,7 +130,8 @@ def load_config(path: Path) -> dict:
     if url.scheme not in ("http", "https") or not url.netloc or url.username or url.password:
         raise ValueError("invalid notification URL")
     ZoneInfo(config["timezone"])
-    for key, low, high in (("daily_hour", 0, 23), ("daily_minute", 0, 59), ("overdue_minutes", 1, 1440)):
+    for key, low, high in (("daily_hour", 0, 23), ("daily_minute", 0, 59), ("overdue_minutes", 1, 1440),
+                           ("fault_grace_minutes", 0, 1440)):
         if type(config[key]) is not int or not low <= config[key] <= high:
             raise ValueError("invalid schedule")
     return config
@@ -190,65 +202,137 @@ def save_state(path: Path, state: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def tick(config_path: Path = CONFIG, state_path: Path = STATE, delivery_path: Path = DELIVERY,
-         *, now: float | None = None, notifier=notify) -> dict:
+DIGEST_DIR = RUNTIME / 'digest'
+
+
+def _advisory_items(digest_dir):
+    """things the report survives but the owner must know about."""
+    items = []
+    for scope, label in (('daily', '日报'), ('on-demand', '按需总结')):
+        try:
+            result = read_json(digest_dir / f'{scope}-images-result.json')
+        except (OSError, ValueError):
+            continue
+        counts = result.get('counts') if isinstance(result.get('counts'), dict) else {}
+        refused = counts.get('refused')
+        if type(refused) is int and refused > 0:
+            items.append((f'refused:{scope}:{result.get("start")}:{result.get("end")}:{refused}', '日报图片被模型拒绝描述',
+                          f'机器{_machine_label()}/{label}：{refused} 张图片被图片模型拒绝描述，报告照发，这些图片标注为“模型拒绝描述”。'
+                          f'证据 runtime/digest/{scope}-images-result.json。'))
+        missing = counts.get('missing')
+        if type(missing) is int and missing > 0:
+            items.append((f'missing:{scope}:{result.get("start")}:{result.get("end")}:{missing}', '日报图片原图缺失',
+                          f'机器{_machine_label()}/{label}：导出里有 {missing} 张图片没有原图，报告照发，这些图片标注为“原图缺失”。'
+                          f'证据 runtime/digest/{scope}-images-result.json。'))
+    return items
+
+
+def check_advisories(config, path, stamp, notifier, digest_dir=DIGEST_DIR):
+    try:
+        sent = read_json(path).get('sent', [])
+    except (OSError, ValueError):
+        sent = []
+    sent = [key for key in sent if isinstance(key, str)] if isinstance(sent, list) else []
+    items = _advisory_items(Path(digest_dir))
+    current = {key for key, _, _ in items}
+    kept = list(sent)
+    changed = kept != sent
+    for key, title, body in items:
+        if key not in kept and notifier(config, title, body, config['recovery_level']):
+            kept.append(key)
+            changed = True
+    if changed:
+        save_state(Path(path), {'sent': kept[-50:], 'updated_at': stamp})
+    return [key for key in kept if key in current]
+
+
+def tick(config_path=CONFIG, state_path=STATE, delivery_path=DELIVERY, *, now=None, notifier=notify):
     config = load_config(config_path)
     stamp = time.time() if now is None else now
     state_path = Path(state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(state_path.parent, 0o700)
-    lock_path = state_path.parent / "tick.lock"
-    with lock_path.open("a") as lock:
+    lock_path = state_path.parent / 'tick.lock'
+    with lock_path.open('a') as lock:
         os.chmod(lock_path, 0o600)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return {"status": "busy", "notified": False}
+            return {'status': 'busy', 'notified': False}
         try:
             try:
                 delivery = read_json(delivery_path)
             except FileNotFoundError:
                 delivery = {}
             except (ValueError, OSError):
-                tz = ZoneInfo(config["timezone"])
-                delivery = {"report_day": datetime.fromtimestamp(stamp, tz).date().isoformat(), "status": "unreadable", "stage": "delivery-state-read"}
+                tz = ZoneInfo(config['timezone'])
+                delivery = {'report_day': datetime.fromtimestamp(stamp, tz).date().isoformat(), 'status': 'unreadable', 'stage': 'delivery-state-read'}
             day, status = observe(delivery, config, stamp)
             try:
                 state = read_json(state_path)
             except FileNotFoundError:
                 state = {}
             except (ValueError, OSError):
-                tz = ZoneInfo(config["timezone"])
+                tz = ZoneInfo(config['timezone'])
                 day = datetime.fromtimestamp(stamp, tz).date().isoformat()
-                status = "unreadable"
-                delivery = {"report_day": day, "status": "unreadable", "stage": "state-read"}
+                status = 'unreadable'
+                delivery = {'report_day': day, 'status': 'unreadable', 'stage': 'state-read'}
                 state = {}
-            if state.get("report_day") != day:
-                state = {"report_day": day, "failure_notified": False, "recovery_notified": False}
+            if state.get('report_day') != day:
+                state = {'report_day': day, 'failure_notified': False, 'recovery_notified': False}
             notified = False
-            if status in {"failed", "unknown", "overdue", "unreadable"}:
-                context = {"text": _diagnostic(delivery, status, day), "status": status, "report_day": day}
-                if state.get("failure_notified"):
-                    if not isinstance(state.get("failure_context"), dict):
-                        state["failure_context"] = context
+            # A failed tick often recovers by itself within minutes: push only after fault_grace_minutes.
+            # Overdue has already waited overdue_minutes and is pushed at once.
+            if status in FAULTS:
+                state.setdefault('fault_since', stamp)
+            else:
+                state.pop('fault_since', None)
+            grace_over = (status == 'overdue'
+                          or stamp - state.get('fault_since', stamp) >= config.get('fault_grace_minutes', 10) * 60)
+            if status in FAULTS and not grace_over and not state.get('failure_notified'):
+                pass
+            elif status in FAULTS:
+                context = _failure_context(delivery, status, day)
+                if state.get('failure_notified'):
+                    known = state.get('failure_context')
+                    if not isinstance(known, dict):
+                        state['failure_context'] = context
+                    elif status != 'overdue':
+                        # A fault that moved to another stage is reported again, with the same debounce.
+                        if context['text'] == known.get('text'):
+                            state.pop('stage_change_text', None)
+                            state.pop('stage_change_since', None)
+                        elif state.get('stage_change_text') != context['text']:
+                            state.update(stage_change_text=context['text'], stage_change_since=stamp)
+                        elif stamp - state['stage_change_since'] >= config.get('fault_grace_minutes', 10) * 60:
+                            body = context['text'] + ' 此监控不修改回执、不补发报告。'
+                            notified = notifier(config, '日报故障阶段已变化', body, config['fail_level'])
+                            if notified:
+                                state.update(failure_sent_at=stamp, failure_context=context)
+                                state.pop('stage_change_text', None)
+                                state.pop('stage_change_since', None)
                 else:
-                    body = context["text"] + " 此监控不修改回执、不补发报告。"
-                    notified = notifier(config, "微信日报未确认送达", body, config["fail_level"])
+                    body = context['text'] + ' 此监控不修改回执、不补发报告。'
+                    notified = notifier(config, '日报未确认送达', body, config['fail_level'])
                     if notified:
                         state.update(failure_notified=True, failure_sent_at=stamp, failure_context=context)
-            elif status == "sent" and state.get("failure_notified") and not state.get("recovery_notified"):
-                context = state.get("failure_context")
+            elif status == 'sent' and state.get('failure_notified') and not state.get('recovery_notified'):
+                context = state.get('failure_context')
                 if not isinstance(context, dict):
-                    context = {"text": _diagnostic({}, "unknown", day), "status": "unknown", "report_day": day}
-                    state["failure_context"] = context
-                body = f"{day} 日报已恢复，两版发送状态已确认；原故障：{context['text']}"
-                notified = notifier(config, "微信日报投递已恢复", body, config["recovery_level"])
+                    context = _failure_context({}, 'unknown', day)
+                    state['failure_context'] = context
+                body = f'{day} 日报已恢复，两版发送状态已确认；原故障：{context["text"]}'
+                notified = notifier(config, '日报投递已恢复', body, config['recovery_level'])
                 if notified:
                     state.update(recovery_notified=True, recovery_sent_at=stamp)
             state.update(status=status, checked_at=stamp)
             save_state(state_path, state)
-            return {"report_day": day, "status": status, "notified": notified,
-                    "failure_notified": bool(state.get("failure_notified")), "checked_at": stamp}
+            try:
+                check_advisories(config, state_path.parent / 'advisories.json', stamp, notifier)
+            except Exception:
+                pass  # advisories must never stop delivery monitoring
+            return {'report_day': day, 'status': status, 'notified': notified,
+                    'failure_notified': bool(state.get('failure_notified')), 'checked_at': stamp}
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 

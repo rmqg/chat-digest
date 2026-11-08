@@ -26,7 +26,7 @@ import daily_report as report_renderer
 REPORT_RENDERER_PATH = Path(report_renderer.__file__).resolve()
 
 _PROJECT = settings.load_project()
-TARGET_GROUP = _PROJECT.get('group', {}).get('id', '')
+TARGET_GROUP = _PROJECT.get('group', {}).get('conversation_id', '')
 REPORT_PREFIX = _PROJECT['report_prefix']
 DISPLAY_TZ = ZoneInfo(_PROJECT['timezone'])
 DAILY_HOUR = _PROJECT['daily_hour']
@@ -329,7 +329,7 @@ def _refresh_topics(source: str, record: dict) -> str:
 
 def _source_messages(record: dict, source_path: Path) -> list[dict]:
     snapshot = json.loads(source_path.read_text(encoding='utf-8'))
-    if snapshot.get('group_id') != record['chat_username'] or snapshot.get('window') != record['window']:
+    if snapshot.get('conversation_id', snapshot.get('group_id')) != record['chat_username'] or snapshot.get('window') != record['window']:
         raise ValueError('source snapshot does not match the report')
     messages = snapshot['messages']
     if len(messages) != record.get('stats', {}).get('messages'):
@@ -654,7 +654,7 @@ def _refresh_header_metrics(source: str, record: dict) -> str:
 def build_site(reports_dir: Path, output_dir: Path) -> dict:
     reports_dir, output_dir = Path(reports_dir), Path(output_dir)
     if not TARGET_GROUP:
-        raise ValueError('explicit group.id in runtime/project.json is required to build a site')
+        raise ValueError('explicit group.conversation_id in runtime/project.json is required to build a site')
     sent_hashes = _sent_report_hashes(reports_dir)
     reports: list[tuple[Path, dict]] = []
     for json_path in sorted(reports_dir.glob("*.json")):

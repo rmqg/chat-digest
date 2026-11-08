@@ -91,10 +91,10 @@ def safe_cli_help(root: Path) -> tuple[list[str], int]:
     problems, count = [], 0
     environment = os.environ.copy()
     for key in list(environment):
-        if key.startswith(('WECHAT_DIGEST_', 'WECHATAGENT_')):
+        if key.startswith(('CHAT_DIGEST_', 'WECHAT_DIGEST_', 'WECHATAGENT_')):
             environment.pop(key)
     with tempfile.TemporaryDirectory(prefix='wechat-doc-check-') as private:
-        environment.update(WECHAT_DIGEST_ROOT=str(root), WECHAT_DIGEST_CONFIG=str(Path(private) / 'not-configured.json'))
+        environment.update(CHAT_DIGEST_ROOT=str(root), CHAT_DIGEST_CONFIG=str(Path(private) / 'not-configured.json'))
         environment['PYTHONPATH'] = os.pathsep.join(str(root / part) for part in ('', 'deployment', 'memory', 'agent_console', 'deployment/vendor'))
         candidates = [*sorted((root / 'deployment').glob('*.py')),
                       root / 'memory/decrypt_sync.py', root / 'memory/memory_ingest.py', root / 'memory/media_sync.py',

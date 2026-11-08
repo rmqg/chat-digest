@@ -33,8 +33,8 @@ SOURCE_MESSAGES_CSS = """
 
 
 def _report_timezone(report=None):
-    """Use report metadata timezone, then WECHAT_DIGEST_TIMEZONE, then Asia/Shanghai."""
-    name = (report or {}).get('timezone') or os.environ.get('WECHAT_DIGEST_TIMEZONE')
+    """Use report metadata timezone, then CHAT_DIGEST_TIMEZONE, then Asia/Shanghai."""
+    name = (report or {}).get('timezone') or os.environ.get('CHAT_DIGEST_TIMEZONE')
     if not name:
         return DISPLAY_TZ
     try:
@@ -59,7 +59,7 @@ def topic_time_range(topic, timezone=None):
 
 
 def _font_candidates():
-    configured = os.environ.get('WECHAT_DIGEST_FONT')
+    configured = os.environ.get('CHAT_DIGEST_FONT')
     bundled = Path(__file__).resolve().parent.parent / 'assets' / 'fonts'
     system = [
         Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
@@ -103,7 +103,7 @@ def font_path():
             continue
         if candidate.is_file():
             return candidate
-    raise RuntimeError('No CJK font found. Set WECHAT_DIGEST_FONT to an installed Pillow-compatible .ttf/.ttc/.otf font.')
+    raise RuntimeError('No CJK font found. Set CHAT_DIGEST_FONT to an installed Pillow-compatible .ttf/.ttc/.otf font.')
 
 
 def build_rhythm_buckets(timestamps, start, end):

@@ -13,21 +13,24 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import chat_send
 import site_access_notice
 import settings
 
 ROOT = settings.ROOT
 RUNTIME = settings.RUNTIME
 PROJECT = settings.load_project()
-GROUP_ID = PROJECT.get("group", {}).get("id")
+GROUP_ID = PROJECT.get("group", {}).get("conversation_id")
 REPORT_PREFIX = PROJECT["report_prefix"]
 TZ = ZoneInfo(PROJECT["timezone"])
 PREPARE_AT = day_time(int(PROJECT["daily_hour"]), 0)
 STATE = RUNTIME / "digest" / "delivery-state.json"
 LOCK = RUNTIME / "digest" / "delivery.lock"
 GENERATOR = ROOT / "deployment" / "run-digest.py"
-SENDER = ROOT / "deployment" / "send-report.py"
 RECEIPTS = RUNTIME / "digest" / "sent-receipts"
+LAST_OUTCOME = RUNTIME / "digest" / "daily-job-last-outcome"
+GENERATE_RETRY_MAX_SECONDS = 900
+LOG_MAX_BYTES = 5 * 1024 * 1024
 
 def _runtime_root() -> Path:
     return settings.RUNTIME if ROOT == settings.ROOT else ROOT / "runtime"
@@ -42,9 +45,9 @@ def _apply_project_timing(project: dict) -> None:
 
 def _configured_group_id() -> str:
     project = settings.load_project(required=True)
-    group_id = project.get("group", {}).get("id")
+    group_id = project.get("group", {}).get("conversation_id")
     if not isinstance(group_id, str) or not group_id.strip():
-        raise ValueError("explicit group.id is required for delivery")
+        raise ValueError("explicit group.conversation_id is required for delivery")
     _apply_project_timing(project)
     return group_id
 
@@ -138,12 +141,52 @@ def _recover_daily_bundle(report_day: str, start_epoch: int, end_epoch: int,
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                     or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
-                    or not receipt.get("server_id") or receipt.get("png_sha256") != digest):
+                    or not receipt.get("send_request_id") or receipt.get("png_sha256") != digest):
                 raise ValueError(f"recovered {edition} receipt does not match its report artifact")
-            item.update(status="sent", server_id=str(receipt["server_id"]), sent_at=receipt["sent_at"],
+            item.update(status="sent", send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"],
                         confirmation=receipt.get("confirmation"))
         recovered[edition] = item
     return recovered
+
+
+def _generate_retry_delay(current: dict, result: subprocess.CompletedProcess | None) -> int:
+    """seconds until the next generation attempt. Every attempt reruns the whole image
+    stage and possibly a full-size model request, so wait as the stage asked, or back off while it keeps failing."""
+    now = int(time.time())
+    if result is not None and result.returncode == 2:
+        try:
+            pending = json.loads(result.stdout.strip().splitlines()[-1])
+            if pending.get("status") == "images_pending" and isinstance(pending.get("next_attempt_at"), (int, float)):
+                return max(60, min(int(pending["next_attempt_at"]) - now, GENERATE_RETRY_MAX_SECONDS))
+        except (ValueError, IndexError, AttributeError):
+            pass
+    failures = int(current.get("generate_failures", 0))
+    current["generate_failures"] = failures + 1
+    return min(60 * 2 ** min(failures, 8), GENERATE_RETRY_MAX_SECONDS)
+
+
+def _cap_cron_logs() -> None:
+    """Cron reopens each log with >> on its next run, so renaming is safe; only one old generation is kept."""
+    for path in sorted((RUNTIME / "digest").glob("*.log")):
+        try:
+            if path.stat().st_size > LOG_MAX_BYTES:
+                os.replace(path, path.with_name(path.name + ".1"))
+        except OSError:
+            pass
+
+
+def _outcome_changed(line: str) -> bool:
+    fingerprint = hashlib.sha256(line.encode("utf-8")).hexdigest()
+    try:
+        if LAST_OUTCOME.read_text(encoding="ascii") == fingerprint:
+            return False
+    except OSError:
+        pass
+    try:
+        LAST_OUTCOME.write_text(fingerprint, encoding="ascii")
+    except OSError:
+        pass
+    return True
 
 
 def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) -> dict:
@@ -161,15 +204,25 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
     brief_path = editions_dir["brief"]
     if brief_path.exists():
         receipt = json.loads(brief_path.read_text(encoding="utf-8"))
-        if receipt.get("status") != "sent" or receipt.get("chat_id") != GROUP_ID or not receipt.get("server_id"):
+        if receipt.get("status") != "sent" or receipt.get("chat_id") != GROUP_ID or not receipt.get("send_request_id"):
             raise ValueError("invalid persisted delivery receipt")
         if "edition" not in receipt:
             return {"status": "sent", "report_day": report_day, "already_terminal": True,
-                    "server_id": receipt["server_id"]}
+                    "send_request_id": receipt["send_request_id"]}
         if receipt.get("edition") != "brief":
             raise ValueError("invalid persisted brief receipt")
 
     state = read_state()
+    # Finished for today: do not rewrite the state file (and its updated_at) every minute.
+    finished = state.get("editions")
+    if (not prepare_only and state.get("report_day") == report_day and state.get("status") == "sent"
+            and state.get("notice_status") in {"sent", "unknown", "disabled"} and isinstance(finished, dict)
+            and all(isinstance(finished.get(edition), dict) and finished[edition].get("status") == "sent"
+                    and not finished[edition].get("error") and editions_dir[edition].exists()
+                    for edition in ("brief", "review"))):
+        return {"status": "sent", "report_day": report_day, "editions": {
+            edition: {"send_request_id": finished[edition].get("send_request_id"), "png": finished[edition].get("png")}
+            for edition in ("brief", "review")}}
     if state.get("report_day") == report_day and not isinstance(state.get("editions"), dict):
         if state.get("status") == "sent" and not (brief_path.exists() and json.loads(brief_path.read_text(encoding="utf-8")).get("edition") == "brief"):
             return {"status": "sent", "report_day": report_day, "already_terminal": True}
@@ -194,9 +247,9 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
                 if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                         or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
-                        or not receipt.get("server_id") or not isinstance(receipt.get("png_sha256"), str)):
+                        or not receipt.get("send_request_id") or not isinstance(receipt.get("png_sha256"), str)):
                     raise ValueError(f"invalid persisted {edition} receipt")
-                item.update(status="sent", png_sha256=receipt["png_sha256"], server_id=str(receipt["server_id"]),
+                item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=str(receipt["send_request_id"]),
                             sent_at=receipt["sent_at"], confirmation=receipt.get("confirmation"))
                 item.pop("error", None)
         for edition in ("brief", "review"):
@@ -261,13 +314,26 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
             current.update(status="unknown", error="interrupted while sending; automatic retry prohibited", updated_at=int(time.time()))
             write_state(current)
             return {"status": "unknown", "report_day": report_day}
+        retry_at = current.get("next_generate_at")
+        if not force and isinstance(retry_at, (int, float)) and time.time() < retry_at:
+            return {"status": "retry_wait", "report_day": report_day, "next_generate_at": int(retry_at)}
         write_state(current)
-        result = subprocess.run([sys.executable, str(GENERATOR), "--hours", str((end_epoch - start_epoch) / 3600), "--end", str(end_epoch)],
-                                cwd=ROOT, capture_output=True, text=True, timeout=3600)
-        if result.returncode:
-            current.update(status="failed", error=(result.stderr or result.stdout)[-4000:], updated_at=int(time.time()))
+        try:
+            result = subprocess.run([sys.executable, str(GENERATOR), "--hours", str((end_epoch - start_epoch) / 3600), "--end", str(end_epoch)],
+                                    cwd=ROOT, capture_output=True, text=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            current.update(status="failed", error="generator timed out after 3600 seconds", updated_at=int(time.time()))
+            current["next_generate_at"] = int(time.time()) + _generate_retry_delay(current, None)
             write_state(current)
             return {"status": "failed", "stage": "generate", "error": current["error"]}
+        if result.returncode:
+            # Waiting for images or a failed attempt: retry later with backoff (max 900 s), never give up.
+            current.update(status="failed", error=(result.stderr or result.stdout)[-4000:], updated_at=int(time.time()))
+            current["next_generate_at"] = int(time.time()) + _generate_retry_delay(current, result)
+            write_state(current)
+            return {"status": "failed", "stage": "generate", "error": current["error"]}
+        current.pop("next_generate_at", None)
+        current.pop("generate_failures", None)
         try:
             generated = json.loads(result.stdout.strip().splitlines()[-1])
             generated_editions = generated["editions"]
@@ -314,9 +380,9 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                     or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
-                    or not receipt.get("server_id") or not isinstance(receipt.get("png_sha256"), str)):
+                    or not receipt.get("send_request_id") or not isinstance(receipt.get("png_sha256"), str)):
                 raise ValueError(f"invalid persisted {edition} receipt")
-            item.update(status="sent", png_sha256=receipt["png_sha256"], server_id=str(receipt["server_id"]),
+            item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=str(receipt["send_request_id"]),
                         sent_at=receipt["sent_at"], confirmation=receipt.get("confirmation"))
             item.pop("error", None)
             current.update(status='sent' if all(editions[key].get('status') == 'sent' for key in ('brief', 'review')) else 'prepared', updated_at=int(time.time()))
@@ -341,46 +407,49 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
             current.update(status="failed", updated_at=int(time.time()))
             write_state(current)
             return {"status": "failed", "stage": "integrity", "report_day": report_day, "edition": edition}
-        item.update(status="sending", send_started_at=int(time.time()))
+        try:
+            send_cfg = chat_send.send_config(settings.load_project(required=True))
+        except chat_send.SendConfigError as exc:
+            item.update(status="failed", error=str(exc), error_kind="invalid")
+            current.update(status="failed", updated_at=int(time.time()))
+            write_state(current)
+            return {"status": "failed", "stage": "send-config", "report_day": report_day, "edition": edition, "error": str(exc)}
+        send_fp = chat_send.config_fingerprint(send_cfg)
+        if item.get("error_kind") == "invalid" and item.get("send_config_sha256") == send_fp:
+            return {"status": "failed", "stage": "send-config", "report_day": report_day, "edition": edition,
+                    "error": "sender rejected the arguments; change the send configuration before it is retried"}
+        rid = chat_send.request_id("daily", GROUP_ID, report_day, edition, item["png_sha256"])
+        item.update(status="sending", send_started_at=int(time.time()), send_request_id=rid)
         current.update(status="sending", updated_at=int(time.time()))
         write_state(current)
-        try:
-            result = subprocess.run([sys.executable, str(SENDER), item["png"], "--send", "--chat-id", GROUP_ID],
-                                    cwd=ROOT, capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired as exc:
-            item.update(status="unknown", error=f"sender timed out; do not retry: {exc}")
-            current.update(status="unknown", updated_at=int(time.time()))
-            write_state(current)
-            return {"status": "unknown", "report_day": report_day, "edition": edition}
-        try:
-            delivered = json.loads(result.stdout.strip().splitlines()[-1])
-        except (json.JSONDecodeError, IndexError):
-            delivered = {"status": "unknown", "reason": "sender gave no parseable result"}
-        if (result.returncode == 0 and delivered.get("status") == "sent" and delivered.get("confirmed") is True
-                and delivered.get("server_id") and delivered.get("sha256") == item["png_sha256"]):
+        delivered = chat_send.send(send_cfg, rid=rid, image=Path(item["png"]))
+        if delivered["status"] == "sent":
             sent_at = int(time.time())
             receipt = {"status": "sent", "edition": edition, "report_day": report_day,
-                       "chat_id": GROUP_ID, "server_id": str(delivered["server_id"]),
-                       "png_sha256": item["png_sha256"], "sent_at": sent_at, "confirmation": delivered}
+                       "chat_id": GROUP_ID, "send_request_id": rid, "png_sha256": item["png_sha256"],
+                       "sent_at": sent_at, "confirmation": delivered}
             receipt_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             temporary = receipt_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
             os.chmod(temporary, 0o600)
             temporary.replace(receipt_path)
-            item.update(status="sent", server_id=receipt["server_id"], sent_at=sent_at, confirmation=delivered)
+            item.update(status="sent", send_request_id=rid, sent_at=sent_at, confirmation=delivered)
             item.pop("error", None)
+            item.pop("error_kind", None)
             current.update(status='sent' if all(editions[key].get('status') == 'sent' for key in ('brief', 'review')) else 'prepared', updated_at=int(time.time()))
             current.pop("error", None)
             write_state(current)
-        elif delivered.get("status") == "failed" and delivered.get("sent") is False and delivered.get("before_submit") is True:
-            item.update(status="failed", confirmation=delivered, error=delivered.get("error", "pre-submit failure"))
+        elif delivered["status"] in {"failed", "invalid"} and delivered.get("before_submit") is True:
+            item.update(status="failed", confirmation=delivered, error_kind=delivered["status"],
+                        send_config_sha256=send_fp,
+                        error=delivered.get("detail") or delivered.get("reason") or "pre-submit failure")
             current.update(status="failed", updated_at=int(time.time()))
             write_state(current)
             return {"status": "failed", "report_day": report_day, "edition": edition, "error": item["error"]}
         else:
             item.update(status="unknown", confirmation=delivered,
-                        error=(result.stderr or delivered.get("error") or delivered.get("reason") or
-                               "delivery cannot be independently confirmed")[-4000:])
+                        error=(delivered.get("detail") or delivered.get("reason") or
+                               "delivery cannot be independently confirmed; automatic retry prohibited")[-4000:])
             current.update(status="unknown", updated_at=int(time.time()))
             write_state(current)
             return {"status": "unknown", "report_day": report_day, "edition": edition}
@@ -393,7 +462,7 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
         current["notice_status"] = notice.get("status")
     write_state(current)
     outcome = {"status": "sent", "report_day": report_day, "editions": {
-        edition: {"server_id": editions[edition].get("server_id"), "png": editions[edition]["png"]}
+        edition: {"send_request_id": editions[edition].get("send_request_id"), "png": editions[edition]["png"]}
         for edition in ("brief", "review")}}
     if notice is not None:
         outcome["notice"] = notice
@@ -406,7 +475,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="bypass schedule time for controlled validation")
     parser.add_argument("--prepare-only", action="store_true", help="generate and verify report without sending")
     args = parser.parse_args()
-    mount = os.environ.get("WECHAT_DIGEST_STORAGE_MOUNT")
+    mount = os.environ.get("CHAT_DIGEST_STORAGE_MOUNT")
     if mount and not Path(mount).is_mount():
         print(json.dumps({"status": "failed", "stage": "storage", "error": "configured data volume is not mounted"}))
         return 1
@@ -423,7 +492,11 @@ def main() -> int:
             print(json.dumps({"status": "running", "reason": "another tick owns the delivery lock"}))
             return 0
         outcome = run_tick(datetime.now(TZ), force=args.force, prepare_only=args.prepare_only)
-    print(json.dumps(outcome, ensure_ascii=False))
+    # One identical line a minute grows the log without saying anything; log changes only.
+    line = json.dumps(outcome, ensure_ascii=False, sort_keys=True)
+    if args.force or args.prepare_only or _outcome_changed(line):
+        print(json.dumps({"logged_at": int(time.time()), **outcome}, ensure_ascii=False))
+    _cap_cron_logs()
     return 1 if outcome["status"] in {"failed", "unknown"} else 0
 
 

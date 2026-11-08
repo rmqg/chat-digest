@@ -36,16 +36,19 @@ class ProviderFallbackPolicyTests(unittest.TestCase):
         self.assertNotIn('api_key', model_fallback.identity(provider))
 
     def test_only_unavailable_and_transport_failures_can_switch_providers(self):
-        for status in (401, 408, 425, 429, 500, 502, 503, 504, 529):
+        for status in (401, 403, 404, 408, 425, 429, 500, 502, 503, 504, 529):
             with self.subTest(status=status):
                 error = urllib.error.HTTPError('https://provider.invalid', status, 'upstream', {}, None)
                 self.assertTrue(model_fallback.is_fallback_error(error))
-        for status in (400, 403, 404, 422):
+        for status in (400, 422):
             with self.subTest(status=status):
                 error = urllib.error.HTTPError('https://provider.invalid', status, 'upstream', {}, None)
                 self.assertFalse(model_fallback.is_fallback_error(error))
         self.assertTrue(model_fallback.is_fallback_error(urllib.error.URLError('connection unavailable')))
         self.assertTrue(model_fallback.is_fallback_error(TimeoutError()))
+        import http.client
+        self.assertTrue(model_fallback.is_fallback_error(http.client.IncompleteRead(b'partial')))
+        self.assertTrue(model_fallback.is_fallback_error(http.client.BadStatusLine('')))
         self.assertFalse(model_fallback.is_fallback_error(ValueError('refusal or malformed structured response')))
 
 

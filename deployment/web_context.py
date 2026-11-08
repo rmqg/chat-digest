@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 import socket
 import ssl
-import sys
 import tempfile
 import time
 from urllib.parse import unquote_plus, urljoin, urlsplit, urlunsplit
@@ -25,10 +24,6 @@ import settings
 
 HERE = Path(__file__).resolve().parent
 ROOT = settings.ROOT
-sys.path.insert(0, str(ROOT / "memory"))
-if Path('/source/memory').is_dir():
-    sys.path.insert(0, '/source/memory')
-import message_parse
 MAX_BYTES = 1024 * 1024
 MAX_REDIRECTS = 2
 TIMEOUT = 10
@@ -365,14 +360,10 @@ def _fetch_page(url: str) -> dict:
 
 def _urls(message: dict) -> list[str]:
     text = message.get("text") or ""
-    raw = message.get("raw_content") or message.get("_source", {}).get("decoded_content") or ""
     found = URL_RE.findall(str(text))
-    try:
-        app_url = message_parse.parse_app_message(raw).get("app_url")
-        if app_url:
-            found.append(app_url)
-    except Exception:
-        pass
+    link = message.get("link")
+    if isinstance(link, dict) and isinstance(link.get("url"), str) and link["url"].strip():
+        found.append(link["url"].strip())
     output = []
     seen = set()
     for candidate in found:
@@ -394,20 +385,11 @@ def _snapshot_messages(path: Path, start: int, end: int) -> list[dict]:
     return [row for row in rows if isinstance(row, dict) and start <= int(row.get("timestamp", row.get("create_time", 0)) or 0) < end]
 
 
-def _database_messages(source_dir: Path, keys_path: Path, start: int, end: int, temp: Path) -> list[dict]:
-    import digest
-    keys = digest._load_keyfile(keys_path)
-    groups, contacts, _, _ = digest._groups_for_source(source_dir, keys, temp)
+def _export_messages(export_root: Path, start: int, end: int) -> list[dict]:
+    import chat_export
     project = settings.load_project(required=True)
-    group = digest.select_group(groups, project['group']['name'], project['group']['id'])
-    result = []
-    for db in sorted((source_dir / "message").glob("message_[0-9]*.db")):
-        if not digest.decrypt_sync.key_for_rel(keys, db.relative_to(source_dir).as_posix()):
-            continue
-        decrypted = digest._decrypt(db, source_dir, keys, temp)
-        if decrypted:
-            result.extend(digest._message_rows(decrypted, group["group_id"], contacts, start, end))
-    return result
+    _conversation, messages = chat_export.read_messages(export_root, project['group']['conversation_id'], start, end)
+    return messages
 
 
 def collect(messages: list[dict], cache_dir: Path, max_pages: int = 0) -> dict:
@@ -454,8 +436,7 @@ def collect(messages: list[dict], cache_dir: Path, max_pages: int = 0) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-db-dir", type=Path)
-    parser.add_argument("--keys", type=Path, default=Path("/keys/all_keys.json"))
+    parser.add_argument("--export-root", type=Path)
     parser.add_argument("--start", required=True, type=int)
     parser.add_argument("--end", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
@@ -469,8 +450,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.start >= args.end or args.max_pages < 0:
         raise SystemExit("invalid window or max-pages")
-    if bool(args.sources_json) == bool(args.source_db_dir):
-        raise SystemExit("provide exactly one of --sources-json or --source-db-dir")
+    if bool(args.sources_json) == bool(args.export_root):
+        raise SystemExit("provide exactly one of --sources-json or --export-root")
     args.cache_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     args.cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(args.cache_dir, 0o700)
@@ -480,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.sources_json:
             messages = _snapshot_messages(args.sources_json, args.start, args.end)
         else:
-            messages = _database_messages(args.source_db_dir, args.keys, args.start, args.end, temp)
+            messages = _export_messages(args.export_root, args.start, args.end)
         result = collect(messages, args.cache_dir, args.max_pages)
     args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

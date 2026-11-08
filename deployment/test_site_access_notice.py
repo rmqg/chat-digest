@@ -3,15 +3,15 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
+import fixture_chat_send as fcs
 import site_access_notice as notice
 
-TEST_GROUP_ID = "fixture10000000000@chatroom"
+TEST_GROUP_ID = "g_fixture_notice"
 TEST_GROUP_NAME = "Synthetic Notice Fixture"
 TEST_BOT_ID = "fixture-bot-id"
 TEST_BOT_NAME = "FixtureBot"
@@ -25,8 +25,8 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
         self.config = self.root / "report-site-access.json"
         self.messages = self.root / "messages"
         self.receipts = self.root / "receipts"
-        project = {"group": {"id": TEST_GROUP_ID, "name": TEST_GROUP_NAME},
-                   "bot": {"username": TEST_BOT_ID, "names": [TEST_BOT_NAME]},
+        project = {"group": {"conversation_id": TEST_GROUP_ID, "name": TEST_GROUP_NAME},
+                   "bot": {"names": [TEST_BOT_NAME], "sender_ids": [TEST_BOT_ID]}, "send": fcs.CONFIG,
                    "public_url": TEST_URL, "timezone": "Asia/Shanghai", "daily_hour": 5,
                    "worker_uid": 1234, "worker_gid": 2345}
         project_patch = patch.object(notice.settings, "load_project", return_value=project)
@@ -36,33 +36,28 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
                                            "username": "fixture-user", "password": "fixture-secret",
                                            "enabled_from": 100}), encoding="utf-8")
         self.receipt = {"status": "sent", "report_day": "2026-10-26", "chat_id": TEST_GROUP_ID,
-                        "server_id": "image-id", "png_sha256": "a" * 64, "sent_at": 200}
+                        "send_request_id": "cd-image", "png_sha256": "a" * 64, "sent_at": 200}
         self.paths = (patch.object(notice, "MESSAGES", self.messages), patch.object(notice, "RECEIPTS", self.receipts))
         for item in self.paths:
             item.start()
             self.addCleanup(item.stop)
         self.addCleanup(self.temp.cleanup)
 
-    @staticmethod
-    def result(value, returncode=0):
-        return subprocess.CompletedProcess([], returncode, json.dumps(value), "fixture-secret must not leak")
-
-    def sender(self, response, calls):
+    def sender(self, status, calls):
         def run(args, **kwargs):
+            self.assertTrue(fcs.is_send(args))
+            self.assertTrue(Path(fcs.argument(args, "--text-file")).is_file())
             calls.append(args)
-            text_file = Path(args[args.index("--text-file") + 1])
-            digest = hashlib.sha256(text_file.read_bytes()).hexdigest()
-            value = dict(response)
-            value.setdefault("sha256", digest)
-            return self.result(value)
+            completed = fcs.result(args, status)
+            completed.stderr = "fixture-secret must not leak"
+            return completed
         return run
 
     def test_access_url_encodes_credentials_without_changing_destination(self):
         config = json.loads(self.config.read_text())
         config.update(username='user@测试 /%', password='p@ss:/?#% +口令')
         self.config.write_text(json.dumps(config), encoding='utf-8')
-        notice.process_notice(self.receipt, config_path=self.config, runner=self.sender(
-            {'status': 'failed', 'sent': False, 'before_submit': True}, []))
+        notice.process_notice(self.receipt, config_path=self.config, runner=self.sender('failed', []))
         body = next(self.messages.iterdir()).read_text()
         url = urlsplit(re.search(r'https://\S+', body).group())
         self.assertEqual(unquote(url.username), config['username'])
@@ -72,14 +67,13 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
 
     def test_before_submit_failure_retries_only_text_then_saves_independent_server_receipt(self):
         calls = []
-        failed = {"status": "failed", "sent": False, "before_submit": True}
-        first = notice.process_notice(self.receipt, config_path=self.config, runner=self.sender(failed, calls))
+        first = notice.process_notice(self.receipt, config_path=self.config, runner=self.sender("failed", calls))
         self.assertEqual(first["status"], "failed")
-        sent = {"status": "sent", "sent": True, "confirmed": True, "server_id": "text-id"}
-        second = notice.process_notice(self.receipt, config_path=self.config, runner=self.sender(sent, calls))
-        self.assertEqual(second["server_id"], "text-id")
+        second = notice.process_notice(self.receipt, config_path=self.config, runner=self.sender("sent", calls))
+        self.assertTrue(second["send_request_id"].startswith("cd-"))
         persisted = json.loads((self.receipts / "2026-10-26.json").read_text())
-        self.assertEqual((persisted["status"], persisted["chat_id"], persisted["server_id"]), ("sent", TEST_GROUP_ID, "text-id"))
+        self.assertEqual((persisted["status"], persisted["chat_id"], persisted["send_request_id"]), ("sent", TEST_GROUP_ID, second["send_request_id"]))
+        self.assertEqual(fcs.argument(calls[0], "--request-id"), fcs.argument(calls[1], "--request-id"))
         self.assertEqual(persisted["png_sha256"], self.receipt["png_sha256"])
         payload = next(self.messages.iterdir()).read_bytes()
         self.assertEqual(persisted["text_sha256"], hashlib.sha256(payload).hexdigest())
@@ -89,7 +83,7 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
 
     def test_sent_and_unknown_are_terminal(self):
         calls = []
-        response = {"status": "sent", "sent": True, "confirmed": True, "server_id": "text-id"}
+        response = "sent"
         notice.process_notice(self.receipt, config_path=self.config, runner=self.sender(response, calls))
         notice.process_notice(self.receipt, config_path=self.config, runner=self.sender(response, calls))
         self.assertEqual(len(calls), 1)
@@ -99,13 +93,13 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
 
     def test_disabled_old_wrong_target_and_tampered_text_never_send(self):
         calls = []
-        runner = self.sender({"status": "sent", "sent": True, "confirmed": True, "server_id": "x"}, calls)
+        runner = self.sender("sent", calls)
         old = dict(self.receipt, sent_at=99)
         self.assertEqual(notice.process_notice(old, config_path=self.config, runner=runner)["status"], "disabled")
-        wrong = dict(self.receipt, chat_id="another10000000000@chatroom")
+        wrong = dict(self.receipt, chat_id="g_another_conversation")
         self.assertEqual(notice.process_notice(wrong, config_path=self.config, runner=runner)["status"], "ineligible")
         notice.MESSAGES.mkdir(parents=True)
-        notice.process_notice(self.receipt, config_path=self.config, runner=lambda *a, **k: self.result({"status": "failed", "sent": False, "before_submit": True}))
+        notice.process_notice(self.receipt, config_path=self.config, runner=self.sender("failed", []))
         msg = next(self.messages.iterdir())
         msg.write_text("changed", encoding="utf-8")
         self.assertEqual(notice.process_notice(self.receipt, config_path=self.config, runner=runner)["status"], "failed")
@@ -115,7 +109,7 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
     def test_manual_notice_uses_request_key_and_preserves_text_hash(self):
         request_id = "b" * 64
         receipt = dict(self.receipt, request_id=request_id)
-        response = {"status": "sent", "sent": True, "confirmed": True, "server_id": "manual-text-id"}
+        response = "sent"
         calls = []
         notice.process_notice(receipt, request_id=request_id, config_path=self.config, runner=self.sender(response, calls))
         persisted = json.loads((self.receipts / f"{request_id}.json").read_text())

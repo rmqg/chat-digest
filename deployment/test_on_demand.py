@@ -9,6 +9,8 @@ from unittest.mock import patch
 import sys
 from types import SimpleNamespace
 
+import fixture_chat_send as fcs
+
 
 MODULE_PATH = Path(__file__).with_name("on-demand.py")
 SPEC = importlib.util.spec_from_file_location("on_demand", MODULE_PATH)
@@ -16,7 +18,7 @@ on_demand = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(on_demand)
 
 
-TEST_GROUP_ID = "fixture10000000000@chatroom"
+TEST_GROUP_ID = "g_fixture_on_demand"
 TEST_GROUP_NAME = "Synthetic On-Demand Fixture"
 TEST_BOT_ID = "fixture-bot-id"
 TEST_BOT_NAME = "FixtureBot"
@@ -28,8 +30,8 @@ class OnDemandQueueTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.jobs = self.root / "jobs"
         self.work = self.root / "summary-commands"
-        project = {"group": {"id": TEST_GROUP_ID, "name": TEST_GROUP_NAME},
-                   "bot": {"username": TEST_BOT_ID, "names": [TEST_BOT_NAME]},
+        project = {"group": {"conversation_id": TEST_GROUP_ID, "name": TEST_GROUP_NAME},
+                   "bot": {"names": [TEST_BOT_NAME], "sender_ids": [TEST_BOT_ID]}, "send": fcs.CONFIG,
                    "report_prefix": TEST_PREFIX, "timezone": "Asia/Shanghai", "daily_hour": 5,
                    "worker_uid": 1234, "worker_gid": 2345}
         for target, attribute, value in (
@@ -72,8 +74,8 @@ class OnDemandQueueTests(unittest.TestCase):
 
     @staticmethod
     def sent_result(command, png_hash, server_id):
-        return subprocess.CompletedProcess(command, 0, json.dumps({'status': 'sent', 'confirmed': True,
-            'server_id': server_id, 'sha256': png_hash}), '')
+        assert fcs.is_send(command)
+        return fcs.result(command, 'sent')
 
     def test_review_pre_submit_failure_resumes_only_review(self):
         path, job = self.prepared_job()
@@ -81,12 +83,11 @@ class OnDemandQueueTests(unittest.TestCase):
         notices = []
 
         def sender(command, **kwargs):
-            edition = Path(command[2]).stem.rsplit('-', 1)[-1]
+            edition = Path(fcs.argument(command, '--image')).stem.rsplit('-', 1)[-1]
             send_order.append(edition)
             digest = job['editions'][edition]['png_sha256']
             if edition == 'review' and send_order.count('review') == 1:
-                return subprocess.CompletedProcess(command, 1,
-                    json.dumps({'status': 'failed', 'sent': False, 'before_submit': True}), '')
+                return fcs.result(command, 'failed')
             return self.sent_result(command, digest, 'server-' + edition)
 
         with patch.object(on_demand.subprocess, 'run', side_effect=sender), patch.object(on_demand, '_retry_notice', side_effect=lambda receipt, rid: notices.append((receipt['edition'], rid))):
@@ -106,8 +107,8 @@ class OnDemandQueueTests(unittest.TestCase):
         path, job = self.prepared_job()
         calls = []
         def unknown_sender(command, **kwargs):
-            calls.append(command[2])
-            return subprocess.CompletedProcess(command, 1, json.dumps({'status': 'unknown'}), '')
+            calls.append(fcs.argument(command, '--image'))
+            return fcs.result(command, 'unknown')
         with patch.object(on_demand.subprocess, 'run', side_effect=unknown_sender):
             self.assertEqual(on_demand.process_job(path)['status'], 'unknown')
             self.assertEqual(on_demand.process_job(path)['status'], 'unknown')
@@ -122,7 +123,7 @@ class OnDemandQueueTests(unittest.TestCase):
             on_demand._atomic_json(on_demand.RECEIPTS / (job['request_id'] + ('-review' if edition == 'review' else '') + '.json'), {
                 'status': 'sent', 'edition': edition, 'chat_id': on_demand.CHAT_ID,
                 'request_id': job['request_id'], 'png_sha256': job['editions'][edition]['png_sha256'],
-                'server_id': 'server-' + edition, 'sent_at': 11000, 'report_day': job['report_day']})
+                'send_request_id': 'cd-server-' + edition, 'sent_at': 11000, 'report_day': job['report_day']})
         on_demand._atomic_json(path, job)
         notices = []
         with patch.object(on_demand.subprocess, 'run', side_effect=AssertionError('both persisted receipts prohibit resend')), patch.object(on_demand, '_retry_notice', side_effect=lambda receipt, rid: notices.append((receipt['edition'], rid))):
@@ -136,7 +137,7 @@ class OnDemandQueueTests(unittest.TestCase):
         on_demand._atomic_json(path, job)
         on_demand._atomic_json(on_demand.RECEIPTS / (job['request_id'] + '.json'), {
             'status': 'sent', 'chat_id': on_demand.CHAT_ID, 'request_id': job['request_id'],
-            'png_sha256': 'old-fingerprint', 'server_id': 'legacy-server', 'sent_at': 11000})
+            'png_sha256': 'old-fingerprint', 'send_request_id': 'cd-legacy-server', 'sent_at': 11000})
         with patch.object(on_demand.subprocess, 'run', side_effect=AssertionError('legacy sent receipt is terminal')):
             result = on_demand.process_job(path)
         self.assertTrue(result['already_terminal'])
@@ -152,11 +153,11 @@ class OnDemandQueueTests(unittest.TestCase):
         on_demand._atomic_json(on_demand.RECEIPTS / (job['request_id'] + '.json'), {
             'status': 'sent', 'edition': 'brief', 'chat_id': on_demand.CHAT_ID,
             'request_id': job['request_id'], 'png_sha256': brief_hash,
-            'server_id': 'brief-server', 'sent_at': 11000, 'report_day': job['report_day']})
+            'send_request_id': 'cd-brief-server', 'sent_at': 11000, 'report_day': job['report_day']})
         sends = []
         notices = []
         def sender(command, **kwargs):
-            sends.append(command[2])
+            sends.append(fcs.argument(command, '--image'))
             return self.sent_result(command, review_hash, 'review-server')
         with patch.object(on_demand.subprocess, 'run', side_effect=sender), patch.object(on_demand, '_retry_notice', side_effect=lambda receipt, rid: notices.append(receipt['edition'])):
             self.assertEqual(on_demand.process_job(path)['status'], 'sent')
@@ -179,10 +180,10 @@ class OnDemandQueueTests(unittest.TestCase):
         on_demand._atomic_json(on_demand.RECEIPTS / (job['request_id'] + '.json'), {
             'status': 'sent', 'edition': 'brief', 'chat_id': on_demand.CHAT_ID,
             'request_id': job['request_id'], 'png_sha256': job['editions']['brief']['png_sha256'],
-            'server_id': 'brief-server', 'sent_at': 11000, 'report_day': job['report_day']})
+            'send_request_id': 'cd-brief-server', 'sent_at': 11000, 'report_day': job['report_day']})
         sends = []
         def sender(command, **kwargs):
-            sends.append(command[2])
+            sends.append(fcs.argument(command, '--image'))
             return self.sent_result(command, job['editions']['review']['png_sha256'], 'review-server')
         notices = []
         with patch.object(on_demand.subprocess, 'run', side_effect=sender), patch.object(on_demand, '_retry_notice', side_effect=lambda receipt, rid: notices.append(receipt['edition'])):
@@ -198,11 +199,11 @@ class OnDemandQueueTests(unittest.TestCase):
         review_path = on_demand.RECEIPTS / (rid + '-review.json')
         brief_path = on_demand.RECEIPTS / (rid + '.json')
         on_demand._atomic_json(review_path, {'status': 'sent', 'edition': 'review', 'chat_id': on_demand.CHAT_ID,
-                                             'request_id': rid, 'server_id': 'review-server'})
+                                             'request_id': rid, 'send_request_id': 'cd-review-server'})
         with patch.dict(sys.modules, {'site_access_notice': fake_notice}), patch.object(on_demand, '_retry_notice', side_effect=lambda receipt, request_id: calls.append((receipt['edition'], request_id))):
             on_demand.process_pending_notices()
             on_demand._atomic_json(brief_path, {'status': 'sent', 'edition': 'brief', 'chat_id': on_demand.CHAT_ID,
-                                                'request_id': rid, 'server_id': 'brief-server', 'report_day': '1970-01-01'})
+                                                'request_id': rid, 'send_request_id': 'cd-brief-server', 'report_day': '1970-01-01'})
             on_demand.process_pending_notices()
             self.assertEqual(calls, [])
             review = json.loads(review_path.read_text())
@@ -216,9 +217,9 @@ class OnDemandQueueTests(unittest.TestCase):
 
     def test_jobs_are_durable_before_cursor_and_duplicate_scans_are_idempotent(self):
         request_id = "a" * 64
-        item = {"request_id": request_id, "message_uid": "u", "server_id": "s",
+        item = {"request_id": request_id, "message_uid": "u", "message_id": "s",
                 "trigger_timestamp": 1000, "author_id": "author", "command_text": "总结"}
-        scan = {"commands": [item], "cursor": {"shard.db": 42}}
+        scan = {"commands": [item], "cursor": {"conversation_id": TEST_GROUP_ID, "last_ts": 1000, "ids_at_last_ts": ["s"]}}
         on_demand._save_cursor_and_jobs(scan)
         first = json.loads((self.jobs / f"{request_id}.json").read_text())
         on_demand._save_cursor_and_jobs(scan)
@@ -237,7 +238,7 @@ class OnDemandQueueTests(unittest.TestCase):
             patcher = patch.object(on_demand, "CONFIG", path)
             patcher.start()
             self.addCleanup(patcher.stop)
-            path.write_text(json.dumps({"chat_id": TEST_GROUP_ID, "bot_username": TEST_BOT_ID,
+            path.write_text(json.dumps({"chat_id": TEST_GROUP_ID,
                                         "bot_names": [TEST_BOT_NAME]}), encoding="utf-8")
             with self.assertRaises(ValueError):
                 on_demand._config()

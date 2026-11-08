@@ -12,7 +12,7 @@ from unittest.mock import patch
 import report_site
 
 
-GROUP = '10000000000@chatroom'
+GROUP = 'g_fixture_site'
 
 
 def elements_with_class(source, class_name):
@@ -169,7 +169,7 @@ class BuildSiteTests(unittest.TestCase):
             add_report(source, "older", end=100)
             add_report(source, "newer", end=200, summary="<script>alert(1)</script>")
             add_report(source, "missing", end=300, png=False)
-            add_report(source, "other-group", end=400, group="other@chatroom")
+            add_report(source, "other-group", end=400, group="g_other_site")
             (source / "secrets.sources.json").write_text('{"private": true}', encoding="utf-8")
             (source / "secrets.sources.html").write_text("secret", encoding="utf-8")
             (source / "secrets.sources.png").write_bytes(b"secret")
@@ -304,7 +304,7 @@ class BuildSiteTests(unittest.TestCase):
             source, output = root / 'reports', root / 'site'
             source.mkdir()
             request_id = 'a' * 64
-            stem = 'wechat-digest-request-' + request_id
+            stem = 'chat-digest-request-' + request_id
             add_report(source, stem, end=10)
             record_path = source / (stem + '.json')
             record = json.loads(record_path.read_text())
@@ -313,14 +313,14 @@ class BuildSiteTests(unittest.TestCase):
             record['window'] = {'start_unix': start, 'end_unix_exclusive': end}
             record['request'] = {'kind': 'on_demand', 'id': request_id, 'trigger_timestamp': end}
             record_path.write_text(json.dumps(record), encoding='utf-8')
-            bad_stem = 'wechat-digest-request-' + 'b' * 64
+            bad_stem = 'chat-digest-request-' + 'b' * 64
             add_report(source, bad_stem, end=11)
             bad_path = source / (bad_stem + '.json')
             bad = json.loads(bad_path.read_text())
             bad['request'] = {'kind': 'on_demand', 'id': 'b' * 64, 'trigger_timestamp': 1}
             bad_path.write_text(json.dumps(bad), encoding='utf-8')
             later_id = 'c' * 64
-            later_stem = 'wechat-digest-request-' + later_id
+            later_stem = 'chat-digest-request-' + later_id
             add_report(source, later_stem, end=10)
             later_path = source / (later_stem + '.json')
             later = json.loads(later_path.read_text())
@@ -391,7 +391,7 @@ class BuildSiteTests(unittest.TestCase):
             source, output = root / 'reports', root / 'site'
             source.mkdir()
             request_id = 'd' * 64
-            base = 'wechat-digest-request-' + request_id
+            base = 'chat-digest-request-' + request_id
             start, end = 1792962000, 1792965600
             shared = {
                 'chat_username': GROUP, 'day': '2026-10-27',
@@ -430,12 +430,12 @@ class BuildSiteTests(unittest.TestCase):
         end = 1792965600
         record = {'request': {'kind': 'on_demand', 'id': request_id, 'trigger_timestamp': end},
                   'window': {'start_unix': end - 60, 'end_unix_exclusive': end}, 'edition': 'brief'}
-        self.assertTrue(report_site._valid_on_demand(record, 'wechat-digest-request-' + request_id + '-brief'))
-        self.assertFalse(report_site._valid_on_demand(record, 'wechat-digest-request-' + request_id + '-review'))
-        self.assertFalse(report_site._valid_on_demand({**record, 'edition': 'unknown'}, 'wechat-digest-request-' + request_id + '-unknown'))
+        self.assertTrue(report_site._valid_on_demand(record, 'chat-digest-request-' + request_id + '-brief'))
+        self.assertFalse(report_site._valid_on_demand(record, 'chat-digest-request-' + request_id + '-review'))
+        self.assertFalse(report_site._valid_on_demand({**record, 'edition': 'unknown'}, 'chat-digest-request-' + request_id + '-unknown'))
         legacy = {key: value for key, value in record.items() if key != 'edition'}
-        self.assertTrue(report_site._valid_on_demand(legacy, 'wechat-digest-request-' + request_id))
-        self.assertFalse(report_site._valid_on_demand(legacy, 'wechat-digest-request-' + request_id + '-brief'))
+        self.assertTrue(report_site._valid_on_demand(legacy, 'chat-digest-request-' + request_id))
+        self.assertFalse(report_site._valid_on_demand(legacy, 'chat-digest-request-' + request_id + '-brief'))
 
     def test_classic_inline_samples_become_author_avatar_source_cards(self):
         with tempfile.TemporaryDirectory() as tmp:

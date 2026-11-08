@@ -5,12 +5,11 @@ import json
 import os
 from datetime import date
 from pathlib import Path
-import subprocess
-import sys
 import time
 from urllib.parse import quote
 from site_access_message import build_access_message
 
+import chat_send
 import settings
 
 ROOT = settings.ROOT
@@ -18,12 +17,11 @@ RUNTIME = settings.RUNTIME
 CONFIG = RUNTIME / "report-site-access.json"
 MESSAGES = RUNTIME / "digest" / "site-access-messages"
 RECEIPTS = RUNTIME / "digest" / "site-access-receipts"
-SENDER = ROOT / "deployment" / "send-report.py"
 
 
 def _project_for_notice() -> tuple[dict, str, str]:
     project = settings.load_project(required=True)
-    group_id = project["group"]["id"]
+    group_id = project["group"]["conversation_id"]
     public_url = project.get("public_url")
     bot = settings.bot_settings(project)
     names = bot.get("names") or []
@@ -67,7 +65,7 @@ def process_notice(receipt: dict, *, request_id: str | None = None, config_path:
         return {"status": "disabled"}
     project, chat_id, bot_name = _project_for_notice()
     if (receipt.get("status") != "sent" or receipt.get("chat_id") != chat_id
-            or not receipt.get("server_id") or not receipt.get("png_sha256")
+            or not receipt.get("send_request_id") or not receipt.get("png_sha256")
             or isinstance(receipt.get("sent_at"), bool) or not isinstance(receipt.get("sent_at"), int)):
         return {"status": "ineligible"}
     if receipt["sent_at"] < config["enabled_from"]:
@@ -118,35 +116,19 @@ def process_notice(receipt: dict, *, request_id: str | None = None, config_path:
     if request_id is not None:
         state["request_id"] = request_id
     _write_json(RECP, state)
-    call = runner or subprocess.run
-    try:
-        result = call([sys.executable, str(SENDER), "--text-file", str(message_path), "--send", "--chat-id", chat_id, '--expected-sha256', digest],
-                      cwd=ROOT, capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        state.update(status="unknown", updated_at=int(time.time()))
-        _write_json(RECP, state)
-        return {"status": "unknown"}
-    except OSError:
-        state.update(status='failed', before_submit=True, updated_at=int(time.time()))
-        _write_json(RECP, state)
-        return {'status': 'failed', 'reason': 'sender process could not start'}
-    try:
-        delivered = json.loads(result.stdout.strip().splitlines()[-1])
-    except (json.JSONDecodeError, IndexError, AttributeError):
-        delivered = {}
-    if not isinstance(delivered, dict):
-        delivered = {}
-    server_id = delivered.get("server_id")
-    if (result.returncode == 0 and delivered.get("status") == "sent" and delivered.get("sent") is True
-            and delivered.get("confirmed") is True and server_id is not None and str(server_id) not in {"", "0"}
-            and delivered.get("sha256") == digest):
-        sent_at = int(time.time())
-        state.update(status="sent", chat_id=chat_id, server_id=str(delivered["server_id"]), sent_at=sent_at)
-    elif delivered.get("status") == "failed" and delivered.get("sent") is False and delivered.get("before_submit") is True:
+    send_cfg = chat_send.send_config(project)
+    rid = chat_send.request_id("site-access", chat_id, key, digest)
+    state["send_request_id"] = rid
+    _write_json(RECP, state)
+    delivered = chat_send.send(send_cfg, rid=rid, text_file=message_path,
+                               **({"runner": runner} if runner is not None else {}))
+    if delivered["status"] == "sent":
+        state.update(status="sent", chat_id=chat_id, sent_at=int(time.time()))
+    elif delivered["status"] in {"failed", "invalid"} and delivered.get("before_submit") is True:
         state.update(status="failed", before_submit=True)
     else:
         state.update(status="unknown")
     state["updated_at"] = int(time.time())
     _write_json(RECP, state)
-    return ({"status": "sent", "chat_id": chat_id, "server_id": state["server_id"], "sent_at": state["sent_at"]}
+    return ({"status": "sent", "chat_id": chat_id, "send_request_id": rid, "sent_at": state["sent_at"]}
             if state["status"] == "sent" else {"status": state["status"]})

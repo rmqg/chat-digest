@@ -177,6 +177,9 @@ def caption_manifest(manifest: list[dict[str, Any]], primary_config: dict[str, A
                     raise ValueError("vision result is missing its actual model")
                 actual_provider = next((provider_name for provider_name, provider_config in configs
                                         if provider_config.get("model") == result["model"]), name)
+                with lock:
+                    if cooldowns.get(cooldown_key, {}).get("transient_failures"):
+                        cooldowns.pop(cooldown_key, None)
                 return result, actual_provider, reasons
             except Exception as exc:
                 info = _error_info(exc)
@@ -209,6 +212,13 @@ def caption_manifest(manifest: list[dict[str, Any]], primary_config: dict[str, A
                         cooldowns[cooldown_key] = {"category": category, "status_code": status,
                             "retry_at": time.time() + delay, "retry_after": info["retry_after"],
                             "config_fingerprint": fingerprint, "endpoint_fingerprint": endpoint_fp}
+                    elif info["retryable"] and category in {"http", "transport"} and (status is None or status >= 500):
+                        # Skip it with growing backoff and keep probing, so it comes back by itself when it recovers.
+                        failures_in_row = int(cooldowns.get(cooldown_key, {}).get("transient_failures", 0)) + 1
+                        cooldowns[cooldown_key] = {"category": category, "status_code": status,
+                            "retry_at": time.time() + min(900, 60 * 2 ** min(failures_in_row - 1, 8)), "retry_after": None,
+                            "config_fingerprint": fingerprint, "endpoint_fingerprint": endpoint_fp,
+                            "transient_failures": failures_in_row}
                 reasons.append({key: info[key] for key in ("provider", "model", "category", "retryable", "status_code", "retry_after", "message")})
                 if diagnostics_dir:
                     diagnostic = {"sha256": sha, "provider": name, "model": model,
@@ -375,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     pending_shas = {item.get("sha256") for item in manifest
                     if item.get("available")
                     and (row := results.get(item.get("message_uid"), {})).get("status") == "pending"
-                    and row.get("reason") == "provider cooldown"}
+                    and (row.get("reason") == "provider cooldown" or row.get("status") == "failed")}
     now = time.time()
     retry_times = []
     configured_providers = [("gemini", primary)] + ([ ("qwen", fallback) ] if fallback else [])
