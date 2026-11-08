@@ -52,8 +52,10 @@ def _set_owner(path: Path, uid: int, gid: int) -> None:
 
 def init_runtime() -> None:
     runtime = settings.RUNTIME
-    worker_uid = settings.DEFAULTS["worker_uid"]
-    worker_gid = settings.DEFAULTS["worker_gid"]
+    # Use project.json's worker user when it exists, so re-running init after setting worker_uid fixes ownership.
+    configured = settings.load_project() if (runtime / "project.json").exists() else settings.DEFAULTS
+    worker_uid = int(configured["worker_uid"])
+    worker_gid = int(configured["worker_gid"])
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(runtime, 0o700)
     _set_owner(runtime, worker_uid, worker_gid)

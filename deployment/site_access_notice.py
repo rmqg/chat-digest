@@ -71,7 +71,7 @@ def process_notice(receipt: dict, *, request_id: str | None = None, config_path:
     if config is None:
         return {"status": "disabled"}
     project, chat_id, bot_name = _project_for_notice()
-    if (receipt.get("status") != "sent" or receipt.get("chat_id") != chat_id
+    if (receipt.get("status") != "sent" or receipt.get("chat_id") not in settings.conversation_ids(project) | {chat_id}
             or not _receipt_send_id(receipt) or not receipt.get("png_sha256")
             or isinstance(receipt.get("sent_at"), bool) or not isinstance(receipt.get("sent_at"), int)):
         return {"status": "ineligible"}

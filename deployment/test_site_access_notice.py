@@ -91,6 +91,19 @@ class SiteNoticeBehaviorTests(unittest.TestCase):
         notice.process_notice(self.receipt, config_path=self.config, runner=self.sender(response, calls))
         self.assertEqual(len(calls), 1)
 
+    def test_v1_notice_under_an_alias_is_terminal_and_never_resent(self):
+        project = dict(notice.settings.load_project(), group={"conversation_id": TEST_GROUP_ID,
+                       "name": TEST_GROUP_NAME, "aliases": ["v1-group@chatroom"]})
+        legacy = dict(self.receipt, chat_id="v1-group@chatroom")
+        self.receipts.mkdir(parents=True, exist_ok=True)
+        self.receipts.joinpath("2026-10-26.json").write_text(json.dumps(
+            {"status": "sent", "chat_id": "v1-group@chatroom", "png_sha256": legacy["png_sha256"]}))
+        calls = []
+        with patch.object(notice.settings, "load_project", return_value=project):
+            result = notice.process_notice(legacy, config_path=self.config, runner=self.sender("sent", calls))
+        self.assertEqual(result, {"status": "sent", "already_terminal": True})
+        self.assertEqual(calls, [])
+
     def test_disabled_old_wrong_target_and_tampered_text_never_send(self):
         calls = []
         runner = self.sender("sent", calls)

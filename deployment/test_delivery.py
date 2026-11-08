@@ -331,6 +331,47 @@ class DeliveryStateTests(unittest.TestCase):
             state = json.loads(state_path.read_text())
             self.assertEqual(state["editions"]["brief"]["send_request_id"], "legacy-v1:v1-brief")
 
+    def test_migrated_v1_receipts_under_an_alias_are_recognized_and_never_resent(self):
+        """Cutover after the v1 daily send: a fresh v2 runtime holds only the copied v1 receipts and reports,
+        all under the old group ID listed in group.aliases."""
+        alias = "v1-group@chatroom"
+        project = {"group": {"conversation_id": TEST_GROUP_ID, "name": TEST_GROUP_NAME, "aliases": [alias]},
+                   "send": fcs.CONFIG, "report_prefix": TEST_PREFIX, "timezone": "Asia/Shanghai", "daily_hour": 5,
+                   "worker_uid": 1234, "worker_gid": 2345}
+        with tempfile.TemporaryDirectory() as temp, patch.object(daily.settings, "load_project", return_value=project):
+            root = Path(temp)
+            state_path = root / "state.json"
+            now = datetime(2026, 3, 4, 20, 30, tzinfo=daily.TZ)
+            _, start, end = daily.day_window(now)
+            _, prepared = self.bundle(root, start, end)
+            daily.RECEIPTS.mkdir(parents=True, exist_ok=True)
+            for edition in ("brief", "review"):
+                metadata = Path(prepared[edition]["json"])
+                metadata.write_text(json.dumps({**json.loads(metadata.read_text()), "chat_username": alias}))
+                path = daily.RECEIPTS / ("2026-03-04" + ("-review" if edition == "review" else "") + ".json")
+                path.write_text(json.dumps({"status": "sent", "edition": edition, "report_day": "2026-03-04",
+                    "chat_id": alias, "server_id": "v1-" + edition,
+                    "png_sha256": prepared[edition]["png_sha256"], "sent_at": 1772571600, "confirmation": {}}))
+            with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), \
+                 patch.object(daily.subprocess, "run", side_effect=AssertionError("migrated v1 send must not repeat")):
+                self.assertEqual(daily.run_tick(now)["status"], "sent")
+                self.assertEqual(daily.run_tick(now)["status"], "sent")
+            state = json.loads(state_path.read_text())
+            self.assertEqual(state["editions"]["review"]["send_request_id"], "legacy-v1:v1-review")
+
+    def test_receipt_of_an_unrelated_conversation_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            now = datetime(2026, 3, 4, 20, 30, tzinfo=daily.TZ)
+            daily.RECEIPTS.mkdir(parents=True, exist_ok=True)
+            (daily.RECEIPTS / "2026-03-04.json").write_text(json.dumps({"status": "sent", "edition": "brief",
+                "report_day": "2026-03-04", "chat_id": "someone-else", "server_id": "x", "png_sha256": "0" * 64,
+                "sent_at": 1772571600}))
+            with patch.object(daily, "STATE", root / "state.json"), patch.object(daily, "ROOT", root), \
+                 patch.object(daily.subprocess, "run", side_effect=AssertionError("must not send")):
+                with self.assertRaisesRegex(ValueError, "invalid persisted delivery receipt"):
+                    daily.run_tick(now)
+
 
 if __name__ == "__main__":
     unittest.main()

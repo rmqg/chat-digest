@@ -98,8 +98,20 @@ def _reusable_realtime_result(input_hash: str):
     return result
 
 
+def _own(path: Path, project: dict | None = None) -> None:
+    """Directories the host creates for stage containers belong to the worker user. When the scheduler runs
+    as root (cron on OpenWrt), the containers run as worker_uid and must be able to write there."""
+    project = project or settings.load_project()
+    try:
+        os.chown(path, int(project["worker_uid"]), int(project["worker_gid"]))
+    except PermissionError:
+        pass  # not root: the directory already belongs to the user running the scheduler
+
+
 def _private_json(path: Path, value) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _own(path.parent)
     fd, temporary = tempfile.mkstemp(prefix='.image-stage-', dir=path.parent)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
@@ -169,6 +181,7 @@ def process_window(start: int, end: int, *, max_images: int = 0, wait_for_lock: 
     if scope not in {'daily', 'realtime', 'on-demand'}:
         raise ValueError('Invalid image processing scope')
     WORK.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _own(WORK)
     with (WORK / 'image-stage.lock').open('a+') as lock:
         os.chmod(lock.name, 0o600)
         try:
@@ -208,6 +221,7 @@ def _process_locked(start: int, end: int, max_images: int, scope: str) -> dict:
     project = settings.load_project(required=True)
     jobs = WORK / 'image-jobs'
     jobs.mkdir(mode=0o700, exist_ok=True)
+    _own(jobs, project)
     for old in jobs.iterdir():
         age = now - old.stat().st_mtime
         # Nothing reads a job directory after its run ended; keep them only briefly.
@@ -217,6 +231,7 @@ def _process_locked(start: int, end: int, max_images: int, scope: str) -> dict:
             shutil.rmtree(old)
     job = jobs / f'{scope}-{now}-{uuid.uuid4().hex[:8]}'
     job.mkdir(mode=0o700)
+    _own(job, project)
     manifest_path = job / 'image-manifest.json'
     output_path = job / 'image-understanding.json'
     delivered = delivered_fingerprints(project)

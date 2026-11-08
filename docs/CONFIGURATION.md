@@ -36,7 +36,7 @@ chat-digest 的配置全部是 `runtime/` 下的 JSON 文件和少量环境变�
 | `image_origin_host` | 字符串或 `null` | `null` | 保留字段，程序不读；部署网站反代时可以记在这里备查 | `null` | 一般不用改 |
 | `daily_hour` | 整数 0–23 | `5` | 每天几点生成日报；日报窗口是“前一天这个时刻到今天这个时刻”的 24 小时 | `8` | 想换出报时间时 |
 | `timezone` | IANA 时区名 | `"Asia/Shanghai"` | 报告显示时间、日报窗口、时长解析使用的时区。导出里的时间一律是 UTC 秒，不受影响 | `"Europe/Berlin"` | 不在东八区时 |
-| `worker_uid` / `worker_gid` | 整数 | `1000` / `1000` | 阶段容器以这个 UID/GID 运行，必须能读导出目录、读写 `runtime/digest` 和 `runtime/reports` | `1001` | 服务用户不是 1000 时 |
+| `worker_uid` / `worker_gid` | 整数 | `1000` / `1000` | 阶段容器以这个 UID/GID 运行，必须能读导出目录、读写 `runtime/digest` 和 `runtime/reports`。调度脚本以 root 运行时（例如 OpenWrt 的 cron），它新建给容器用的目录会自动交给这个用户 | `1200` | 服务用户或导出目录的属主不是 1000 时；改了以后再运行一次 `./bin/chat-digest init`，把 `runtime/` 下这几个目录的属主改过来 |
 | `images.runtime` | 字符串 | `"chat-digest-runtime:2.0.0"` | 本地构建的运行时镜像引用。实际执行时用 `image-pins.json` 里锁定的不可变 ID | `"chat-digest-runtime:2.0.0"` | 升级镜像后，配合 `bootstrap.py --refresh-pins` |
 | `image_pending_grace_seconds` | 非负整数（秒） | `21600`（6 小时） | 导出里图片原图还是 `pending` 时最多等多久；超过就按“原图缺失”标注，报告照出，不会永远卡住 | `3600` | 导出工具下载原图很慢或很快时 |
 

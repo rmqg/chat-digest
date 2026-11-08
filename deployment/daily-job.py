@@ -50,6 +50,12 @@ def _apply_project_timing(project: dict) -> None:
     REPORT_PREFIX = project["report_prefix"]
 
 
+def _accepted_ids() -> set[str]:
+    """Receipts and report metadata written under group.aliases (for example by v1 before a migration)
+    belong to this conversation too. New receipts are always written under GROUP_ID."""
+    return settings.conversation_ids(settings.load_project(required=True)) | {GROUP_ID}
+
+
 def _configured_group_id() -> str:
     project = settings.load_project(required=True)
     group_id = project.get("group", {}).get("conversation_id")
@@ -137,7 +143,7 @@ def _recover_daily_bundle(report_day: str, start_epoch: int, end_epoch: int,
             raise ValueError("recovered edition paths must stay within runtime/reports")
         metadata = json.loads(json_path.read_text(encoding="utf-8"))
         if (not _has_positive_message_count(metadata) or metadata.get("edition") != edition
-                or metadata.get("chat_username") != GROUP_ID or metadata.get("window") != expected_window
+                or metadata.get("chat_username") not in _accepted_ids() or metadata.get("window") != expected_window
                 or metadata.get("request") is not None):
             raise ValueError("recovered edition must contain messages and match target and time window")
         digest = sha256(png)
@@ -147,7 +153,7 @@ def _recover_daily_bundle(report_day: str, start_epoch: int, end_epoch: int,
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
-                    or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
+                    or receipt.get("report_day") != report_day or receipt.get("chat_id") not in _accepted_ids()
                     or not _receipt_send_id(receipt) or receipt.get("png_sha256") != digest):
                 raise ValueError(f"recovered {edition} receipt does not match its report artifact")
             item.update(status="sent", send_request_id=_receipt_send_id(receipt), sent_at=receipt["sent_at"],
@@ -211,7 +217,7 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
     brief_path = editions_dir["brief"]
     if brief_path.exists():
         receipt = json.loads(brief_path.read_text(encoding="utf-8"))
-        if receipt.get("status") != "sent" or receipt.get("chat_id") != GROUP_ID or not _receipt_send_id(receipt):
+        if receipt.get("status") != "sent" or receipt.get("chat_id") not in _accepted_ids() or not _receipt_send_id(receipt):
             raise ValueError("invalid persisted delivery receipt")
         if "edition" not in receipt:
             return {"status": "sent", "report_day": report_day, "already_terminal": True,
@@ -253,7 +259,7 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
             if receipt_path.exists() and isinstance(item, dict) and item.get("png_sha256"):
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
                 if (receipt.get("status") != "sent" or receipt.get("edition") != edition
-                        or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
+                        or receipt.get("report_day") != report_day or receipt.get("chat_id") not in _accepted_ids()
                         or not _receipt_send_id(receipt) or not isinstance(receipt.get("png_sha256"), str)):
                     raise ValueError(f"invalid persisted {edition} receipt")
                 item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=_receipt_send_id(receipt),
@@ -386,7 +392,7 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
-                    or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
+                    or receipt.get("report_day") != report_day or receipt.get("chat_id") not in _accepted_ids()
                     or not _receipt_send_id(receipt) or not isinstance(receipt.get("png_sha256"), str)):
                 raise ValueError(f"invalid persisted {edition} receipt")
             item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=_receipt_send_id(receipt),
