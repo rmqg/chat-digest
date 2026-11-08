@@ -201,7 +201,14 @@ def process_manifest(manifest: list[Any], output_path: Path, cache_dir: Path, ma
             eligible.append((uid, item))
         else:
             reason = "image is unavailable" if not isinstance(item, dict) or item.get("available") is not True else "image quality is not original/client_full"
-            output[uid] = {"status": "failed", "source_kind": "ocr", "reason": reason}
+            if isinstance(item, dict) and item.get("source_quality") == "pending":
+                # The exporter has not downloaded the original yet: wait, it may still arrive.
+                output[uid] = {"status": "pending", "source_kind": "ocr", "reason": "original image pending in export"}
+            elif isinstance(item, dict) and item.get("terminal") is True:
+                # The export says the original is missing (or only a thumbnail exists): terminal, never blocks.
+                output[uid] = {"status": "unavailable", "source_kind": "ocr", "reason": reason}
+            else:
+                output[uid] = {"status": "failed", "source_kind": "ocr", "reason": reason}
     if duplicates:
         eligible = [(uid, item) for uid, item in eligible if uid not in duplicates]
     work: list[tuple[str, dict[str, Any], bytes, str, Path]] = []
@@ -229,6 +236,11 @@ def process_manifest(manifest: list[Any], output_path: Path, cache_dir: Path, ma
         os.environ["NUMEXPR_NUM_THREADS"] = "1"
         try:
             ocr = _create_ocr()
+        except ImportError:
+            # Runtime image built without the optional OCR layer (WITH_OCR=0): OCR is simply not available.
+            for uid, _, _, _, _ in work:
+                output[uid] = {"status": "unavailable", "source_kind": "ocr", "reason": "OCR is not installed in this runtime image"}
+            ocr = None
         except Exception as exc:
             message = f"OCR dependency/model initialization failed: {type(exc).__name__}: {exc}"
             for uid, _, _, _, _ in work:
@@ -252,7 +264,7 @@ def process_manifest(manifest: list[Any], output_path: Path, cache_dir: Path, ma
                     output[uid] = {"status": "failed", "source_kind": "ocr",
                                    "reason": f"{type(exc).__name__}: {exc}"}
     _private_json(output_path, output)
-    counts = {status: sum(value.get("status") == status for value in output.values()) for status in ("ok", "failed", "pending")}
+    counts = {status: sum(value.get("status") == status for value in output.values()) for status in ("ok", "failed", "pending", "unavailable")}
     return {"messages": len(manifest), **counts, "output": str(output_path), "engine": ENGINE, "engine_version": ENGINE_VERSION}
 
 

@@ -154,7 +154,7 @@ def process(rows: dict, config: dict, cache_dir: Path, max_items: int = 0,
         base = _base(entry)
         source_hash = entry.get('image_sha256')
         if entry.get('status') != 'ok':
-            status = entry.get('status') if entry.get('status') in ('pending', 'failed') else 'failed'
+            status = entry.get('status') if entry.get('status') in ('pending', 'failed', 'unavailable') else 'failed'
             output[uid] = {**base, 'status': status, 'reason': 'ocr_' + status}
             if status == 'pending' and isinstance(entry.get('retry_at'), (int, float)):
                 output[uid]['retry_at'] = entry['retry_at']

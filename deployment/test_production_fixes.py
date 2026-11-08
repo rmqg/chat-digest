@@ -88,5 +88,41 @@ class ImageStageTests(unittest.TestCase):
         self.assertEqual(error.label, "ocr_images.py: exit 1")
 
 
+class OcrTerminalStateTests(unittest.TestCase):
+    def test_missing_originals_and_absent_ocr_layer_never_block_the_pipeline(self):
+        import builtins
+        import io
+        import hashlib
+        import ocr_images
+        import ocr_summary
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = io.BytesIO()
+            Image.new("RGB", (4, 4), "white").save(data, format="PNG")
+            image = root / "a.png"
+            image.write_bytes(data.getvalue())
+            manifest = [{"message_uid": "ready", "available": True, "source_quality": "original", "image_path": str(image),
+                         "sha256": hashlib.sha256(data.getvalue()).hexdigest()},
+                        {"message_uid": "missing", "available": False, "source_quality": "missing", "terminal": True},
+                        {"message_uid": "waiting", "available": False, "source_quality": "pending"}]
+            real_import = builtins.__import__
+
+            def no_ocr(name, *args, **kwargs):
+                if name.startswith("rapidocr"):
+                    raise ImportError(name)
+                return real_import(name, *args, **kwargs)
+            with patch("builtins.__import__", side_effect=no_ocr):
+                ocr_images.process_manifest(manifest, root / "ocr.json", root / "cache")
+            rows = json.loads((root / "ocr.json").read_text())
+            self.assertEqual({uid: row["status"] for uid, row in rows.items()},
+                             {"ready": "unavailable", "missing": "unavailable", "waiting": "pending"})
+            summary, _calls = ocr_summary.process(rows, CONFIG, root / "summary-cache")
+            auxiliary = image_pipeline._build_auxiliary_context(summary, {})
+            blocking = {uid for uid, item in auxiliary.items()
+                        if any(entry.get("status") in ("pending", "failed") for entry in item.values())}
+            self.assertEqual(blocking, {"waiting"})
+
+
 if __name__ == "__main__":
     unittest.main()
