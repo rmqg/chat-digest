@@ -1,126 +1,55 @@
 # 运行维护
 
-配置字段约束见 `CONFIGURATION.md`；初始安装与账号采集见 `DEPLOYMENT.md`；错误诊断见 `TROUBLESHOOTING.md`。
+安装和服务启用见 [INSTALL.md](INSTALL.md)，出问题先看 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
 
+## 日常命令
 
+| 想做的事 | 命令 |
+|---|---|
+| 自检 | `./bin/chat-digest doctor`（加 `--probe-send` 做一次发送 dry run） |
+| 立刻生成当天日报但不发 | `./bin/chat-digest prepare-only` |
+| 不等到点，立刻跑一次日报流程（会发送） | `./bin/chat-digest daily-tick --force` |
+| 生成任意时间窗的报告（不发送） | `./bin/chat-digest run --hours 6` |
+| 看 @ 请求队列 | `./bin/chat-digest on-demand --status` |
+| 看实时预处理状态 | `python3 deployment/realtime-images.py --status` |
+| 看当天投递状态 | `python3 -m json.tool runtime/digest/delivery-state.json` |
+| 看阶段失败原因 | `tail runtime/digest/stage-failures.jsonl` |
 
-## 每日自动任务与手动触发
+## 日报的节奏
 
-`deployment/daily-job.py` 每分钟调用一次；到达 `project.json` 配置的 `timezone` 和 `daily_hour` 后处理该配置窗口。OpenWrt 安装器 `scripts/install-openwrt.sh` 将以下分钟级 cron 行幂等追加到 root crontab：
+- `daily-job.py --tick` 每分钟被叫醒一次。到 `daily_hour` 以后才生成；生成成功写 `prepared`，然后先发简报、再发回顾；当天两版都 `sent` 以后直接返回，不再写文件。
+- 结果只在变化时写一行日志（`logged_at` 是写日志的时间）；`runtime/digest/*.log` 超过 5 MB 轮转一代。
+- 等图或失败时按 `next_generate_at` 等待：等图按阶段给出的时间（60–900 秒），失败按 60、120、240… 秒，上限 900 秒，**永不放弃**；看门狗会在故障持续 10 分钟后提醒。
+- 简报没确认送达之前，回顾一定不发。
 
-```cron
-* * * * * cd /opt/wechat-digest && /usr/bin/python3 deployment/daily-job.py >> runtime/digest/daily-job.log 2>&1
-```
+## 实时预处理（可选）
 
-该行假设项目位于 `/opt/wechat-digest`、Python 位于 `/usr/bin/python3`。每分钟 tick 使用互斥锁，已有 tick 时新 tick 输出 `running` 并退出。日志可能含敏感诊断信息，需限制权限并轮替。若设置 `WECHAT_DIGEST_STORAGE_MOUNT`，须将其传入 cron 与按需服务的实际环境；shell 临时 `export` 不会自动持久化为开机任务环境。
+`chat-digest-images` 服务白天持续处理新图片和链接，出报时只剩下摘要这一步：
 
-初次安装（先 dry-run，再应用）：
+- 导出没有变化、也没到每小时复查时，不跑；有变化时两次之间至少隔 `MIN_GAP_SECONDS`（120 秒），避免消息不停进来时整窗重复处理。
+- 先跑取图和网页收集，输入和上一次完整运行一样就复用结果，不再起后面的容器（每小时强制完整跑一次）。
+- 每轮最多处理 4 张图、4 个网页、2 个网页摘要，剩下的下一轮继续。
 
-```sh
-cd /opt/wechat-digest
-sudo scripts/install-openwrt.sh --dry-run
-sudo scripts/install-openwrt.sh --apply
-```
+## 群内 @ 请求（可选）
 
-`--root ABSOLUTE_STAGING_FS_ROOT` 指系统文件树 staging 根（默认 `/`），不是项目源码目录；用于测试安装布局时可设 staging 根。安装器默认 dry-run，只有 `--apply` 才复制三个 initd 服务并幂等添加上述 cron 行；拒绝符号链接目标，不会启动服务。确认输出的服务文件、crontab 路径和目标 root 正确后再 apply。不要在 staging root 内写入真实生产目录数据。
+`chat-digest-commands` 服务每分钟扫一次导出（导出没变化时 10 分钟才复扫），把“@机器人 总结……”记成任务，按时间顺序一个一个生成并发送。只说“总结”默认最近 24 小时，带时长的由模型解析（v2 对时长没有额外上限，请求很长的窗口会产生相应的模型费用）；失败按 60–900 秒退避重试。
 
-手动生成自定义时段摘要，`--hours` 必须为正数，默认 24 小时，默认结束时刻为当前时间：
+## Bark 投递监控（可选）
 
-```sh
-cd /opt/wechat-digest
-/usr/bin/python3 deployment/run-digest.py --hours 24
-```
+`daily-watchdog.py --tick` 只读 `delivery-state.json`，在“过了出报时间还没两版都送达”“生成或发送失败”“状态是 unknown”时推送一次，故障换阶段再推一次，恢复后推一次恢复通知；另外对“图片被模型拒绝”“原图缺失”各提醒一次。它不改回执、不补发。
 
-每日 bundle 可用 `--prepare-only` 只生成/校验、不发送；若需手动预演，先停正式 cron，运行一次：
+## 网站（可选）
 
-```sh
-cd /opt/wechat-digest
-/usr/bin/python3 deployment/daily-job.py --prepare-only
-```
+- `publish_reports.py` 在每次生成成功后被自动触发，把成对的简报/回顾 HTML 和引用到的图片同步到 `report-site.json` 指定的远端；不上传 `sources.json`。
+- 原图回源 `image-origin.py` 只在本机回环地址提供按哈希命名的图片，前面需要你自己的反代和认证，示例 `deployment/services/chat-digest-image-origin.caddy`。
 
-它用 Asia/Shanghai 当天窗口生成两版，确认后恢复 cron。每日正式流程 brief 成功后才尝试 review，两 edition 的状态、PNG hash 与收据独立。请勿直接改写 scheduler JSON 或收据来强制重发。
+## 存储和清理
 
-固定结束时刻可增加 `--end EPOCH`。`--list-groups` 可列出当前数据源群组而不请求模型：
+| 位置 | 增长 | 清理 |
+|---|---|---|
+| `runtime/digest/image-jobs/` | 每次处理一个目录 | 实时 10 分钟、日报 7 天、按需 7 天后自动删除 |
+| `runtime/digest/` 下的 `.digest-*`、`.images-*` 等临时目录 | 容器被强杀时残留 | 生成前自动删除 6 小时以上的 |
+| `runtime/digest/images/decoded/`、各类 `*-cache` | 随图片和网页数量增长 | 不自动删除；可在停服务后整体删除，代价是重新请求模型 |
+| `runtime/reports/` | 每天两版 | 不自动删除，按你的保留期限清理 |
 
-```sh
-/usr/bin/python3 deployment/run-digest.py --list-groups
-```
-
-将输出与 `project.json` 中明确配置的群组 ID/name 人工比对，不按列表顺序选择。成功时 stdout 最后一行是 JSON 结果，包含 brief/review 文件；非零退出或 `images_pending` 不是完整成功，应先处理图片/错误。按需触发由 `wechat-summary-commands` 服务接收；不要手工伪造请求 ID，`--request-id` 仅用于服务生成的 64 位小写 SHA-256 ID，并要求明确 start/end 且 start < end。
-
-## Bark 日报投递监督
-
-`deployment/daily-watchdog.py` 是只读监督器：它不生成、修改或发送报告，只读取 `runtime/digest/delivery-state.json`，在失败/未知/超时未完成时可发送 Bark 提醒。恢复通知必须看到当天 `editions.brief.status` 与 `editions.review.status` 均为 `sent`；单版成功、整体状态中的中间 `sent` 标记都不构成日报完成，避免误报恢复。
-
-从已有 Bark 接收端配置初始化独立配置，再由编辑器确认提醒分组、级别及项目时区/日报时刻：
-
-```sh
-cd /opt/wechat-digest
-umask 077
-/usr/bin/python3 deployment/daily-watchdog.py --init-config \\
-  --source-config runtime/wechat-watchdog.json --config runtime/daily-watchdog.json
-/usr/bin/python3 deployment/daily-watchdog.py --check-config --config runtime/daily-watchdog.json
-```
-
-`--init-config` 不覆盖既有文件；配置也可从无秘密模板 [`examples/daily-watchdog.example.json`](../examples/daily-watchdog.example.json) 创建。限制配置 `0600`，Bark URL 中若含私有设备路径须保密。配置完成后由现有 cron 每分钟单独调用一次：
-
-```cron
-* * * * * cd /opt/wechat-digest && /usr/bin/python3 deployment/daily-watchdog.py --tick >> runtime/daily-watchdog.log 2>&1
-```
-
-监控状态与投递状态分别存储；它不会删改收据，也不会自动重试未知发送。检查状态不可读时先修复存储与权限，不要因此清空日报防重状态。
-
-日报与微信观察 Bark 的失败、恢复和测试通知包含机器/服务、相对文件及函数、可用时的抛错行号、阶段、日期/版别或检查标识，以及受控证据路径。机器默认使用主机名，可用 `WECHAT_DIGEST_MACHINE` 设置简短机器标签；不得将凭据或 URL 当标签。恢复通知保留对应原故障上下文，旧已通知状态缺上下文时补充信息但不重新推送故障。历史没有记录的来源或行号会明确缺失，不凭错误文案编造栈帧；超期只表示尚未确认完成，不等于任务停止。
-
-发送器新增的定位字段只记录代码位置、阶段和异常类型，不包含帧变量或异常载荷；监控推送使用这些受控字段。Bark 接收地址、设备密钥、Authorization、Cookie、API key 和密码不得进入通知正文、公开日志或 issue；排障时使用正文给出的相对证据路径读取本机受限数据，不要清空防重状态。
-
-## brief/review、重复发送与状态恢复
-
-每日生成有 brief 与 review 两个 edition。调度器用 `runtime/digest/delivery-state.json`、文件锁及 `sent-receipts/` 收据持久化状态。运行时同一时刻只允许一个 tick 持有锁；输出 `running` 表示另一个 tick 正在执行，不应再并行启动。
-
-发送过程被中断、状态为 `unknown`、发现缺失收据，或已标记发送但收据不在时，系统禁止自动重试，以免重复发送。人工恢复：停止调度，保存状态/收据/日志供本地排查；通过微信目标群的实际消息与服务端收据确认该版是否送达。若无法确定，保持 unknown，不要删除状态或收据来重发。只有确认未送达且理解状态机语义后，按运维流程恢复；确认已送达则保留其收据。brief 和 review 分别跟踪，切勿因一版成功就假定另一版也成功。
-
-## 服务启停
-
-OpenWrt/iStoreOS 模板服务名固定为 `wechat-image-origin`（私有 assets origin）、`wechat-summary-commands`（按需命令扫描）和 `wechat-images`（实时图片工作）。先执行安装器 dry-run 并 `--apply` 安装脚本；只有配置、desktop、pins 和 runtime 均已准备后再启用：
-
-```sh
-/etc/init.d/wechat-image-origin enable && /etc/init.d/wechat-image-origin start
-/etc/init.d/wechat-summary-commands enable && /etc/init.d/wechat-summary-commands start
-/etc/init.d/wechat-images enable && /etc/init.d/wechat-images start
-```
-
-检查状态用 `/etc/init.d/SERVICE status`（将 SERVICE 替换为以上确切名称）；重启用 `restart`。停服务用 `stop`；取消开机自启用 `disable`，两者须分别执行。image-origin 需有效 origin JSON，summary-commands 需完整 trigger JSON、desk session/key/selection/model，wechat-images 需所用模型/原图与OCR依赖可用。安装器只复制 service 与 cron 配置，不会自动启动/启用。升级、故障恢复前停服务及日报 cron；确认安全状态后再 enable/start。
-
-## 图片与实时任务运行
-
-图片 worker 与原图下载使用 `runtime/image-pins.json` 的 runtime pin 和 `runtime/project.json`；每次任务按 `group.id/name` 生成内容，避免混入其他群组。确认 `selection.json` 由本机已确认账号生成，并且整个 `runtime/gui/` 可只读挂载到容器 `/config`。原图请求依赖 `/config/...` 下源 DB 及同一 GUI storage 的 MMKV、CDN 配置和媒体兄弟文件，不可裁切到单独 database 子目录。
-
-日报和 `wechat-images` 实时服务均按项目 `timezone`/`daily_hour` 计算各自窗口。cron 每分钟唤起 `daily-job.py`，到达配置时刻才生成并递送窗口；实时图片服务根据同一配置使用自身窗口。配置更改后检查生成窗口边界，不要假设已有任务的状态/收据会迁移。
-
-图片处理结果位于 `runtime/digest/image-jobs/`，包括 manifest、原图请求/下载状态、vision/OCR 输出与失败账本。确认任务已经终态并留存所需审计证据后，才清理可重建 cache。OCR 依赖的 `runtime/ocr-deps/` 是可选挂载，只在目录存在时挂载；如果要求 OCR 但依赖未准备，检查运行结果的 failed 状态并安装锁文件指定的目标架构 wheel。`runtime/python-deps/` 不是图片 worker 的强制挂载。
-
-## 发布器、静态站点与图片服务
-
-静态发布配置 `runtime/report-site.json` 必须含 `host`、受限 `user`、`port`、`identity_file`、`known_hosts`、相对 `remote_path`。为该 user 单独建 SSH key，并在远端限制写入单个网站目录；通过严格 host-key pinning 检查身份。发布入口：
-
-```sh
-cd /opt/wechat-digest
-/usr/bin/python3 deployment/publish_reports.py
-```
-
-`published`/`unchanged` 为正常结果，`busy` 表示锁占用；无配置文件时发布停用。只发布验证过的 `index.html`、reports HTML 和资产白名单，不要添加 rsync `--delete` 或绕过清单。
-
-图片源的 `runtime/image-origin.json` 为私密配置，`assets_dir`、随机 `token` 必需，`port` 默认8099且 `bind` 仅允许127.0.0.1。先跑 `deployment/image-origin.py --config runtime/image-origin.json --check-config`，再启动 `wechat-image-origin`。服务只允许 loopback peer + Bearer token 的 GET/HEAD hash asset 请求。
-
-对外静态站点应要求认证并让报告 HTML 与图片同域，Caddy snippet 经受控 `image-origin-auth.caddy` 认证后将 hash 图片反代到 origin。Cloudflare Tunnel route 的本地服务目标为 `http://127.0.0.1:8099`；origin 与 cloudflared 必须共享兼容 network namespace；不要公网 bind 8099。排查 1033 看 connector readiness，而不是面板/Analytics 单一 metrics。TCP 7844 与 UDP transport 分开判断；排障中不要全局重启网络。直接组65534方案只在 operator 已验证原先存在的 bypass rule 时才适用，不是通用要求。
-
-
-## 缓存、存储与字体
-
-`runtime/digest/` 包含采集/图片处理中间物、锁、递送状态和收据。不要清空整个目录：这会损坏 no-resend 证据。只清理已确认不再被任务引用的缓存子目录，清理前停调度并备份状态/收据。`runtime/reports/` 是发布输入及报告档案；制定保留期前确认发布站点依赖哪些文件，并确保无软链接或越界路径。清理前按业务策略导出需要保留的报告。
-
-若宿主已配置真实持久数据卷，且要启用挂载保护，在 daily cron 与 on-demand 服务的运行环境设置 `WECHAT_DIGEST_STORAGE_MOUNT` 为那个 mount point。未设置/空值表示关闭该 guard；设置后必须 `is_mount()` 为真，普通目录不够。daily 发现未挂载时输出 storage-stage failure 并退出非零，on-demand 拒绝处理。挂载先由主机存储管理配置完成；例如单次人工诊断可 `export WECHAT_DIGEST_STORAGE_MOUNT=/mnt/digest-data` 后运行检查入口，但要让 cron/服务重启后仍生效，须用目标固件支持的持久环境配置方式。切勿因目录存在就假设卷已挂载。
-
-报告字体放在 `runtime/report-fonts/` 并需合法授权。使用可读字体文件并确保摘要容器挂载可访问；缺字体时先修复字体挂载，不要通过压缩字号或静默替换来掩盖问题。
-
+这些目录都含聊天内容派生数据，删除前确认不再需要；备份要加密。

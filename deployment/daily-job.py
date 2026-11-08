@@ -32,6 +32,13 @@ LAST_OUTCOME = RUNTIME / "digest" / "daily-job-last-outcome"
 GENERATE_RETRY_MAX_SECONDS = 900
 LOG_MAX_BYTES = 5 * 1024 * 1024
 
+
+def _receipt_send_id(receipt: dict) -> str:
+    """chat-send/v1 idempotency key; a v1.x receipt (WeChat server_id) counts as a confirmed legacy send."""
+    if receipt.get("send_request_id"):
+        return str(receipt["send_request_id"])
+    return "legacy-v1:" + str(receipt["server_id"]) if receipt.get("server_id") else ""
+
 def _runtime_root() -> Path:
     return settings.RUNTIME if ROOT == settings.ROOT else ROOT / "runtime"
 
@@ -141,9 +148,9 @@ def _recover_daily_bundle(report_day: str, start_epoch: int, end_epoch: int,
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                     or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
-                    or not receipt.get("send_request_id") or receipt.get("png_sha256") != digest):
+                    or not _receipt_send_id(receipt) or receipt.get("png_sha256") != digest):
                 raise ValueError(f"recovered {edition} receipt does not match its report artifact")
-            item.update(status="sent", send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"],
+            item.update(status="sent", send_request_id=_receipt_send_id(receipt), sent_at=receipt["sent_at"],
                         confirmation=receipt.get("confirmation"))
         recovered[edition] = item
     return recovered
@@ -204,11 +211,11 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
     brief_path = editions_dir["brief"]
     if brief_path.exists():
         receipt = json.loads(brief_path.read_text(encoding="utf-8"))
-        if receipt.get("status") != "sent" or receipt.get("chat_id") != GROUP_ID or not receipt.get("send_request_id"):
+        if receipt.get("status") != "sent" or receipt.get("chat_id") != GROUP_ID or not _receipt_send_id(receipt):
             raise ValueError("invalid persisted delivery receipt")
         if "edition" not in receipt:
             return {"status": "sent", "report_day": report_day, "already_terminal": True,
-                    "send_request_id": receipt["send_request_id"]}
+                    "send_request_id": _receipt_send_id(receipt)}
         if receipt.get("edition") != "brief":
             raise ValueError("invalid persisted brief receipt")
 
@@ -247,9 +254,9 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
                 if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                         or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
-                        or not receipt.get("send_request_id") or not isinstance(receipt.get("png_sha256"), str)):
+                        or not _receipt_send_id(receipt) or not isinstance(receipt.get("png_sha256"), str)):
                     raise ValueError(f"invalid persisted {edition} receipt")
-                item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=str(receipt["send_request_id"]),
+                item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=_receipt_send_id(receipt),
                             sent_at=receipt["sent_at"], confirmation=receipt.get("confirmation"))
                 item.pop("error", None)
         for edition in ("brief", "review"):
@@ -380,9 +387,9 @@ def run_tick(now: datetime, *, force: bool = False, prepare_only: bool = False) 
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                     or receipt.get("report_day") != report_day or receipt.get("chat_id") != GROUP_ID
-                    or not receipt.get("send_request_id") or not isinstance(receipt.get("png_sha256"), str)):
+                    or not _receipt_send_id(receipt) or not isinstance(receipt.get("png_sha256"), str)):
                 raise ValueError(f"invalid persisted {edition} receipt")
-            item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=str(receipt["send_request_id"]),
+            item.update(status="sent", png_sha256=receipt["png_sha256"], send_request_id=_receipt_send_id(receipt),
                         sent_at=receipt["sent_at"], confirmation=receipt.get("confirmation"))
             item.pop("error", None)
             current.update(status='sent' if all(editions[key].get('status') == 'sent' for key in ('brief', 'review')) else 'prepared', updated_at=int(time.time()))

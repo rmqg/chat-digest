@@ -19,6 +19,13 @@ MESSAGES = RUNTIME / "digest" / "site-access-messages"
 RECEIPTS = RUNTIME / "digest" / "site-access-receipts"
 
 
+
+def _receipt_send_id(receipt: dict) -> str:
+    """chat-send/v1 idempotency key; a v1.x receipt (WeChat server_id) counts as a confirmed legacy send."""
+    if receipt.get("send_request_id"):
+        return str(receipt["send_request_id"])
+    return "legacy-v1:" + str(receipt["server_id"]) if receipt.get("server_id") else ""
+
 def _project_for_notice() -> tuple[dict, str, str]:
     project = settings.load_project(required=True)
     group_id = project["group"]["conversation_id"]
@@ -65,7 +72,7 @@ def process_notice(receipt: dict, *, request_id: str | None = None, config_path:
         return {"status": "disabled"}
     project, chat_id, bot_name = _project_for_notice()
     if (receipt.get("status") != "sent" or receipt.get("chat_id") != chat_id
-            or not receipt.get("send_request_id") or not receipt.get("png_sha256")
+            or not _receipt_send_id(receipt) or not receipt.get("png_sha256")
             or isinstance(receipt.get("sent_at"), bool) or not isinstance(receipt.get("sent_at"), int)):
         return {"status": "ineligible"}
     if receipt["sent_at"] < config["enabled_from"]:

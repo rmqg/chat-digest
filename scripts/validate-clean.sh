@@ -6,6 +6,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv ca-certificates >/dev/null
 uname -m
+uname -r
 python3 --version
 . /etc/os-release && echo "$PRETTY_NAME"
 mkdir -p /opt && cd /opt

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only consumer for the chat-export/v1 directory format (see docs/CONTRACT.md).
 
-Producers (wechat-export-send, wecom-export, or any compatible tool) append messages; this module never
+Producers (wechat-export-send or any other compatible exporter) append messages; this module never
 writes into an export, never reads the producer's ``state/`` directory and never trusts paths that leave the
 export root. Messages are normalized into the digest's internal message dictionaries.
 """

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Continuously process newly synchronized WeChat images without generating a digest."""
+"""Continuously preprocess new images and links of the configured conversation without generating a digest."""
 import argparse
 import fcntl
 import json

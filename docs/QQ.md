@@ -1,6 +1,6 @@
 # QQ 接入与运行
 
-本功能使用 OneBot v11 WebSocket API 接入 QQ 群，不读取微信数据、不复用微信 runtime，也不会接入或读取私有 Agent/Memory 数据。QQ 侧数据、任务、回执、报告和模型配置均放在独立目录；不要把 QQ 报告放进微信网站发布目录。
+本功能使用 OneBot v11 WebSocket API 接入 QQ 群，不读取 chat-export 导出、不复用 `runtime/` 下的日报状态，也不会接入或读取私有 Agent/Memory 数据。QQ 侧数据、任务、回执、报告和模型配置均放在独立目录；不要把 QQ 报告放进微信网站发布目录。
 
 ## 前提与边界
 
@@ -27,7 +27,7 @@ install -m 600 /dev/null /srv/qq-digest/runtime/onebot.token
 python3 scripts/install-ocr.py --target /srv/qq-digest/ocr-deps --wheel-dir /srv/qq-digest/ocr-wheels
 # 运行 worker 时将 /srv/qq-digest/ocr-deps 加入 PYTHONPATH；已有 wheel 可用 --offline 安装。
 # 或构建包含该 OCR 层的 Linux x86-64 工具镜像：
-docker build --build-arg WITH_OCR=1 -t wechat-digest-runtime:1.2.4 .
+docker build --build-arg WITH_OCR=1 -t chat-digest-runtime:2.0.0 .
 ```
 
 相对路径以 JSON 配置文件所在目录为基准。服务配置至少应明确 `onebot_url`、`onebot_token_file`、`group_id`、`group_name`、`expected_self_id`、`bot_names`、`runtime_dir`、`reports_dir`、`model_config`、`enabled_from` 和 `daily_hour`。`enabled_from` 是 Unix 秒时间戳，防止启用前的历史消息被当作新触发。模板中的群、账号、密码、URL 和 token 路径均为虚构/占位，必须替换；不得将真实 token 或 API key 放入仓库。
@@ -71,7 +71,7 @@ QQ 报告站点是 Python 标准库实现，可选监听本机 loopback 或 Unix
 
 同一群的明文密码需分别生成两种验证器：`qq_report_site.py --hash-password` 生成站点用的 scrypt；Caddy 的 `caddy hash-password` 从标准输入读取密码并生成 bcrypt。二者不能互换。不要使用会把明文放进进程参数的 `--plaintext`，也不要改写现有 MSC 的用户名或哈希。更新后先执行 Caddy `validate` 再平滑 `reload`；只重载本次新建的 QQ 站点进程，不重启共享代理。
 
-浏览器可能缓存现有 MSC 的 HTTP Basic 身份。共用域名时，必须先按固定 `/qq/*` 路径将请求交给 QQ 专用认证器，再执行按认证用户名划分的旧站点路由；不能只依赖缓存的 `http.auth.user.id` 选择 QQ/微信后端。此路径优先规则不得移除 QQ 服务自身认证、扩大群权限或改变原有微信根入口。
+浏览器可能缓存同一域名下其他站点的 HTTP Basic 身份。共用域名时，必须先按固定 `/qq/*` 路径将请求交给 QQ 专用认证器，再执行按认证用户名划分的旧站点路由；不能只依赖缓存的 `http.auth.user.id` 选择后端。此路径优先规则不得移除 QQ 服务自身认证、扩大群权限或改变原有根入口。
 
 ```caddyfile
 @qq path /qq/*
@@ -79,7 +79,7 @@ handle @qq {
     reverse_proxy unix//config/private/qq-site.sock
 }
 handle {
-    # Keep the existing, authenticated WeChat/root routing here.
+    # Keep the existing, authenticated root routing (other report sites) here.
 }
 ```
 
@@ -127,4 +127,4 @@ python3 deployment/qq_publish.py --config /private/path/qq-publish.json
 
 ## 发布验证清单
 
-发行前（不在此说明中代替父代理的统一验证）：检查 JSON 模板无秘密和真实群/账号；审阅 QQ 数据根目录与微信及 MSC 的分离；确认网站不依赖第三方 Web 框架；检查 NapCat/OneBot v11 前提、Caddy socket 权限和认证；在授权测试群先做 24 小时无发送试跑并人工检查报告；再测试一次真实提及、默认/自定 7 天边界、取消、空报告拒绝、永久失败及已送达防重；确认失败和未知状态均不会造成重复投递；离线生成 QQ 虚构样本并打开 HTML/PNG；完成后才按项目的发布流程发布。测试/实际发送可能暴露消息并产生模型费用，必须由部署者明确启用。
+部署前：检查 JSON 模板无秘密和真实群/账号；审阅 QQ 数据根目录与其他报告目录的分离；确认网站不依赖第三方 Web 框架；检查 NapCat/OneBot v11 前提、Caddy socket 权限和认证；在授权测试群先做 24 小时无发送试跑并人工检查报告；再测试一次真实提及、默认/自定 7 天边界、取消、空报告拒绝、永久失败及已送达防重；确认失败和未知状态均不会造成重复投递；离线生成 QQ 虚构样本并打开 HTML/PNG；完成后才按项目的发布流程发布。测试/实际发送可能暴露消息并产生模型费用，必须由部署者明确启用。

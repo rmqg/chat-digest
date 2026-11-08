@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan and deliver explicit on-demand summaries for the selected WeChat group."""
+"""Scan and deliver explicit on-demand summaries for the configured conversation."""
 from __future__ import annotations
 
 import argparse
@@ -35,6 +35,13 @@ REPORT_PREFIX = settings.load_project()["report_prefix"]
 POLL_SECONDS = 10
 STOP = False
 
+
+
+def _receipt_send_id(receipt: dict) -> str:
+    """chat-send/v1 idempotency key; a v1.x receipt (WeChat server_id) counts as a confirmed legacy send."""
+    if receipt.get("send_request_id"):
+        return str(receipt["send_request_id"])
+    return "legacy-v1:" + str(receipt["server_id"]) if receipt.get("server_id") else ""
 
 def _project() -> dict:
     return settings.load_project(required=True)
@@ -231,7 +238,7 @@ def _interpret(job: dict) -> dict | None:
     output = candidate.with_name("intent.json")
     _atomic_json(candidate, job["candidate"])
     result = _container_call(["/tool/summary_commands.py", "--interpret", "--input", str(Path("/work") / candidate.relative_to(DIGEST)),
-                             "--output", str(Path("/work") / output.relative_to(DIGEST))], network="wechat-digest_default", timeout=300)
+                             "--output", str(Path("/work") / output.relative_to(DIGEST))], network="default", timeout=300)
     if result.returncode:
         _failure(job, "interpret")
         return None
@@ -285,9 +292,9 @@ def _recover_on_demand_bundle(request_id: str, start: int, end: int) -> dict:
             if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                     or receipt.get("chat_id") != CHAT_ID or receipt.get("request_id") != request_id
                     or receipt.get("report_day") != _report_day(end)
-                    or not receipt.get("send_request_id") or receipt.get("png_sha256") != digest):
+                    or not _receipt_send_id(receipt) or receipt.get("png_sha256") != digest):
                 raise ValueError(f"recovered {edition} receipt does not match its report artifact")
-            item.update(status="sent", send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"])
+            item.update(status="sent", send_request_id=_receipt_send_id(receipt), sent_at=receipt["sent_at"])
         recovered[edition] = item
     return recovered
 
@@ -322,15 +329,15 @@ def process_job(path: Path) -> dict:
     legacy_receipt = _load(root_receipt_path)
     if (legacy_receipt.get("status") == "sent" and "edition" not in legacy_receipt
             and legacy_receipt.get("chat_id") == CHAT_ID and legacy_receipt.get("request_id") == request_id
-            and legacy_receipt.get("send_request_id")):
+            and _receipt_send_id(legacy_receipt)):
         if status != "sent":
-            job.update(status="sent", send_request_id=legacy_receipt["send_request_id"],
+            job.update(status="sent", send_request_id=_receipt_send_id(legacy_receipt),
                        sent_at=legacy_receipt.get("sent_at", now), updated_at=now)
             _atomic_json(path, job)
         return {"status": "sent", "request_id": request_id, "already_terminal": True}
     has_new_brief = (legacy_receipt.get("status") == "sent" and legacy_receipt.get("edition") == "brief"
                      and legacy_receipt.get("chat_id") == CHAT_ID and legacy_receipt.get("request_id") == request_id
-                     and legacy_receipt.get("send_request_id"))
+                     and _receipt_send_id(legacy_receipt))
     if status in {"sent", "unknown", "ignored"} and not isinstance(job.get("editions"), dict):
         if not (status == "sent" and has_new_brief):
             return {"status": status, "request_id": request_id}
@@ -397,10 +404,10 @@ def process_job(path: Path) -> dict:
                     receipt = _load(receipt_path)
                     if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                             or receipt.get("chat_id") != CHAT_ID or receipt.get("request_id") != request_id
-                            or not receipt.get("send_request_id") or not isinstance(receipt.get("png_sha256"), str)):
+                            or not _receipt_send_id(receipt) or not isinstance(receipt.get("png_sha256"), str)):
                         raise ValueError
                     item.update(status="sent", png_sha256=receipt["png_sha256"],
-                                send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"])
+                                send_request_id=_receipt_send_id(receipt), sent_at=receipt["sent_at"])
                     _atomic_json(path, job)
                 elif item.get("status") == "sent":
                     item.update(status="unknown", error="sent edition receipt is missing; automatic retry prohibited")
@@ -498,10 +505,10 @@ def process_job(path: Path) -> dict:
                 receipt = _load(receipt_path)
                 if (receipt.get("status") != "sent" or receipt.get("edition") != edition
                         or receipt.get("chat_id") != CHAT_ID or receipt.get("request_id") != request_id
-                        or not receipt.get("png_sha256") or not receipt.get("send_request_id")):
+                        or not receipt.get("png_sha256") or not _receipt_send_id(receipt)):
                     return _failure(job, "receipt-integrity")
                 item.update(status="sent", png_sha256=receipt["png_sha256"],
-                            send_request_id=str(receipt["send_request_id"]), sent_at=receipt["sent_at"])
+                            send_request_id=_receipt_send_id(receipt), sent_at=receipt["sent_at"])
                 _atomic_json(path, job)
                 continue
             if item.get("status") in {"unknown", "sending"}:

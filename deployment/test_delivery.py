@@ -310,5 +310,27 @@ class DeliveryStateTests(unittest.TestCase):
             self.assertNotIn("png", json.loads(state_path.read_text()))
 
 
+    def test_v1_receipts_with_server_id_count_as_sent_and_are_never_resent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state_path = root / "state.json"
+            now = datetime(2026, 3, 4, 5, 0, tzinfo=daily.TZ)
+            _, start, end = daily.day_window(now)
+            _, prepared = self.bundle(root, start, end)
+            daily.RECEIPTS.mkdir(parents=True, exist_ok=True)
+            for edition in ("brief", "review"):
+                path = daily.RECEIPTS / ("2026-03-04" + ("-review" if edition == "review" else "") + ".json")
+                path.write_text(json.dumps({"status": "sent", "edition": edition, "report_day": "2026-03-04",
+                    "chat_id": TEST_GROUP_ID, "server_id": "v1-" + edition,
+                    "png_sha256": prepared[edition]["png_sha256"], "sent_at": 1772571600, "confirmation": {}}))
+            state_path.write_text(json.dumps({"report_day": "2026-03-04", "status": "prepared", "editions": prepared,
+                "window": {"start_unix": start, "end_unix_exclusive": end}}))
+            with patch.object(daily, "STATE", state_path), patch.object(daily, "ROOT", root), \
+                 patch.object(daily.subprocess, "run", side_effect=AssertionError("v1 receipt must not be resent")):
+                self.assertEqual(daily.run_tick(now)["status"], "sent")
+            state = json.loads(state_path.read_text())
+            self.assertEqual(state["editions"]["brief"]["send_request_id"], "legacy-v1:v1-brief")
+
+
 if __name__ == "__main__":
     unittest.main()

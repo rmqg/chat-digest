@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.0.0
+
+破坏性更新：仓库由 `rmqg/wechat-digest` 改名为 `rmqg/chat-digest`，只负责总结和出报告。升级步骤见 [docs/MIGRATION-v2.md](docs/MIGRATION-v2.md)。
+
+**拆分**
+
+- 移除微信的运行、密钥提取、数据库解密、消息/媒体解析、X11 发送和登录看门狗（`memory/`、`tools/wcdb-key-tool`、`deployment/vendor/wxextract`、`capture_41.py`、`scan-image-key.py`、`send-report.py`、`wechat-watchdog.py`、`fetch-originals.py`、`prepare-collection.py`、wechat-selkies compose）。这些功能移到 wechat-export-send。
+- 输入改为只读 chat-export/v1 目录（`deployment/chat_export.py`）：按消息 ID 去重、后出现的行覆盖前面的、忽略未写完的最后一行、坏行和越界路径直接报错、媒体按 SHA-256 核对、缩略图不冒充原图。
+- 发送改为调用可配置的 chat-send/v1 命令（`deployment/chat_send.py`）：`sent` 写回执；`failed` 重试；`invalid` 等配置修好；`unknown`、超时、输出不可解析、退出码与状态不一致一律不重发。每次发送带固定的 `send_request_id`。回执里的 `server_id` 换成 `send_request_id`；v1 留下的回执被认作已送达。
+- 头像只取导出里的成员头像文件，不再联网下载；@ 请求扫描、网页链接、来源图片都改为读导出字段。QQ（OneBot v11）输入和发送不变。
+- 配置：`group.id` → `group.conversation_id`，新增 `export.root`、`send`、`bot.sender_ids`、`docker_network`、`image_pending_grace_seconds`；删除 `bot.username`、`desktop_container`、`images.desktop`、`images.keyscan`。环境变量 `WECHAT_DIGEST_*` 改名为 `CHAT_DIGEST_*`。
+
+**合入 v1.2.4 之后生产环境的修复**
+
+- 所有模型调用照全局 fallback 链走：网页摘要、日报摘要、@ 请求解析、QQ 自然语言请求都接上备用模型；HTTP 403/404 和 `IncompleteRead` 等半路断开也切备用，400/422、拒答、截断不切。流式响应缺结束标记或带上游错误事件时切备用。
+- 网页摘要和 OCR 摘要失败按 120 秒起指数退避、上限 900 秒，永不放弃；图片描述主模型 5xx 或断连时冷却 60 秒起、上限 900 秒，到期自动再试。
+- 图片阶段的三路处理改为串行，避免小内存机器同时运行三个 1 GB 容器；先收集链接，实时轮次输入不变时复用上次结果。
+- 调度读取网页每一页的 `retry_at`；日报和 @ 请求生成失败按 60–900 秒退避，等图时按阶段给出的时间等；实时预处理两次之间至少隔 `MIN_GAP_SECONDS`（120 秒）。
+- 阶段失败的脚本、退出码和输出尾部写进 `runtime/digest/stage-failures.jsonl`（600，1 MB 轮转）；阶段超时会删除残留容器；生成前清理 6 小时以上的残留临时目录；按需任务目录保留期从 30 天缩短到 7 天。
+- 图片被模型拒绝描述、或导出里原图缺失时不再卡住日报，报告照发并标注，看门狗各提醒一次。镜像没装 OCR 时 OCR 记为不可用而不是一直等待。
+- 日报当天完成后不再每分钟重写状态，日志只在结果变化时写，5 MB 轮转；看门狗故障防抖 10 分钟，故障换阶段再推一次，从报错里识别错误类型。
+
+**修复 v1.2.4 的缺陷**
+
+- `digest.py` 写报告前缺少报告路径赋值，真实生成会出错。
+- `image_pipeline.py` 使用了未赋值的图片描述结果。
+
+**新增**
+
+- `bin/chat-digest` 统一入口；`scripts/install.sh` 一条命令安装；`doctor` 自检并给出修法；离线 demo 改为从合成 chat-export 目录经真实生成流程出报告，并用演示发送器走一遍 chat-send/v1。
+- systemd unit 和 OpenWrt procd 服务；`scripts/build-release.sh` 构建可复现的发布包和 SHA256SUMS；release workflow 生成构建来源证明。
+- 全新的中文文档：安装、配置（逐个参数）、排障、架构、安全边界、兼容性、实测记录、迁移指南、接口约定。
+
 ## 1.2.4
 
 - Resolve explicit QQ on-demand durations through the natural-language duration parser rather than silently replacing unrecognized duration text with a 24-hour window; only a bare summary request uses the default. Parse complete fenced JSON responses safely while still rejecting truncated/incomplete output.
@@ -37,10 +70,6 @@
 - Include sanitized source/stage and report-day/edition context in delivery Bark notices, retaining failure context for deduplicated recovery without exposing raw errors or secrets.
 - Drop stale active edition errors only after validated success receipts, including terminal replays, while retaining historical logs and forbidding regeneration or duplicate submission.
 - Keep historical token counts and confirmed PNG fingerprints unchanged; publish only synthetic examples, not production accounts, conversations, reports or operational history.
-
-## Unreleased
-
-- No unreleased changes.
 
 ## 1.1.1
 
