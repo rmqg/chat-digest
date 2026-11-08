@@ -3,13 +3,29 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import platform
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
+
+
+def _fetch(url, timeout, attempts=6, wait=10):
+    """Download with retries: wheels are large and links through proxies often drop mid-transfer."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except (OSError, http.client.HTTPException) as exc:
+            if attempt == attempts or (isinstance(exc, urllib.error.HTTPError) and exc.code < 500):
+                raise
+            print(f'download failed ({type(exc).__name__}), retry {attempt}/{attempts - 1}', file=sys.stderr, flush=True)
+            time.sleep(wait * attempt)
 
 
 def install(lock_path: Path, target: Path, wheel_dir: Path, *, offline=False):
@@ -27,13 +43,11 @@ def install(lock_path: Path, target: Path, wheel_dir: Path, *, offline=False):
             if offline:
                 raise RuntimeError('missing offline wheel: '+name)
             package, version, _ = name.split('-', 2)
-            with urllib.request.urlopen('https://pypi.org/pypi/'+package.replace('_','-')+'/'+version+'/json', timeout=30) as response:
-                metadata = json.load(response)
+            metadata = json.loads(_fetch('https://pypi.org/pypi/'+package.replace('_','-')+'/'+version+'/json', 30))
             artifact = next((item for item in metadata['urls'] if item['filename'] == name), None)
             if artifact is None or artifact['digests']['sha256'] != row['sha256']:
                 raise RuntimeError('official metadata does not match locked wheel: '+name)
-            with urllib.request.urlopen(artifact['url'], timeout=90) as response:
-                data = response.read()
+            data = _fetch(artifact['url'], 90)
             if hashlib.sha256(data).hexdigest() != row['sha256']:
                 raise RuntimeError('download checksum mismatch: '+name)
             temporary = wheel.with_suffix('.tmp');temporary.write_bytes(data);os.replace(temporary,wheel)
