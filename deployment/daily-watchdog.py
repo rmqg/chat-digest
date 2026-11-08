@@ -344,7 +344,7 @@ def main(argv=None) -> int:
     mode.add_argument("--init-config", action="store_true", help="create separate private config from existing Bark settings")
     mode.add_argument("--check-config", action="store_true")
     parser.add_argument("--config", type=Path, default=CONFIG)
-    parser.add_argument("--source-config", type=Path, default=RUNTIME / "wechat-watchdog.json")
+    parser.add_argument("--source-config", type=Path, default=ROOT / "examples" / "daily-watchdog.example.json")
     args = parser.parse_args(argv)
     try:
         if args.init_config:

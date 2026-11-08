@@ -394,7 +394,7 @@ def render_png_pillow(report, output_path):
     title = str(report.get('title_prefix') or report.get('report_kind') or '群聊日报') + (' · 简报' if report.get('edition') == 'brief' else ' · 回顾')
     topics = report.get('topics') or []
     stats = report.get('stats') or {}
-    stat_labels = {'messages': '消息总量', 'total_messages': '消息总量', 'members': '活跃成员', 'active_members': '活跃成员', 'groups': '话题数量', 'images': '图片数量'}
+    stat_labels = {'messages': '消息总量', 'total_messages': '消息总量', 'members': '活跃成员', 'active_members': '活跃成员', 'groups': '话题数量', 'images': '图片数量', 'excluded_own_reports': '已排除自发报告', 'image_understood': '已理解图片'}
     stat_text = [f'{stat_labels.get(key, str(key))}：{value}' for key, value in stats.items()]
     measure_texts = [title, str(report.get('chat_display') or report.get('chat_username') or '聊天日报'), str(report.get('range_text') or report.get('day') or ''), str(report.get('generated_at') or ''), str(report.get('one_line') or ''), *stat_text]
     if report.get('leaders', {}).get('peak'):

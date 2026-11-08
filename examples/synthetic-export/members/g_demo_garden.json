@@ -1,0 +1,21 @@
+{
+  "conversation_id": "g_demo_garden",
+  "updated_at": 1793145600,
+  "members": [
+    {
+      "id": "u_lin",
+      "name": "林小满",
+      "avatar": "media/c4/c4215534eecb551d6e48269c80ab68154428c17411fcf3a43a8b36176962a6e9.png"
+    },
+    {
+      "id": "u_zhou",
+      "name": "周禾",
+      "avatar": "media/44/448f3211c65a2bbc20b4653a3ec12e5e374987f7a0fd12984aab61634f1f1cfa.png"
+    },
+    {
+      "id": "u_chen",
+      "name": "陈星",
+      "avatar": "media/9e/9eab183623e8617e41cc99fbca3aca7f2dfecfee980d5c746c6ec46bff864fed.png"
+    }
+  ]
+}

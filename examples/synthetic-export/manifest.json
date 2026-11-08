@@ -1,0 +1,24 @@
+{
+  "schema": "chat-export/v1",
+  "producer": {
+    "name": "chat-digest-demo",
+    "version": "2.0.0"
+  },
+  "source": {
+    "platform": "other",
+    "account_id": "demo_account"
+  },
+  "generated_at": "2026-10-29T08:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "conversations": [
+    {
+      "id": "g_demo_garden",
+      "kind": "group",
+      "name": "合成示例群（虚构）",
+      "file": "conversations/g_demo_garden.jsonl",
+      "members_file": "members/g_demo_garden.json",
+      "last_ts": 1793160000,
+      "message_count": 7
+    }
+  ]
+}

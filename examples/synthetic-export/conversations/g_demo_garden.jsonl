@@ -1,0 +1,7 @@
+{"id": "m001", "ts": 1793149200, "sender_id": "u_lin", "sender_name": "林小满", "type": "text", "text": "周末的社区花园活动改到周六上午，入口旁边集合。"}
+{"id": "m002", "ts": 1793149500, "sender_id": "u_zhou", "sender_name": "周禾", "type": "text", "text": "收到，我会带上工具箱，顺便把旧花盆清理出来。"}
+{"id": "m003", "ts": 1793149800, "sender_id": "u_chen", "sender_name": "陈星", "type": "quote", "text": "我可以负责准备植物标签。", "reply_to": {"id": "m001", "sender_name": "林小满", "text": "周末的社区花园活动改到周六上午，入口旁边集合。"}}
+{"id": "m004", "ts": 1793152800, "sender_id": "u_lin", "sender_name": "林小满", "type": "forward", "forward": [{"sender_name": "社区志愿者", "ts": 1793152600, "type": "text", "text": "A区：香草；B区：花苗"}]}
+{"id": "m005", "ts": 1793156400, "sender_id": "u_zhou", "sender_name": "周禾", "type": "image", "media": [{"kind": "image", "status": "ready", "is_thumbnail": false, "path": "media/52/526da33172d903ab5450203983b0bc8cbff1d4a7c616c1e7b44f1d0b9ebdf489.png", "sha256": "526da33172d903ab5450203983b0bc8cbff1d4a7c616c1e7b44f1d0b9ebdf489", "bytes": 4139, "mime": "image/png"}]}
+{"id": "m006", "ts": 1793156600, "sender_id": "u_chen", "sender_name": "陈星", "type": "link", "link": {"url": "https://example.org/garden-guide", "title": "城市小花园入门（虚构链接）", "description": "示例链接，demo 不联网抓取"}}
+{"id": "m007", "ts": 1793160000, "sender_id": "u_chen", "sender_name": "陈星", "type": "text", "text": "标签用防水纸打印，字写大一点，小朋友也能看清。"}

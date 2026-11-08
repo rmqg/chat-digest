@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12']
+        python: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,27 +29,28 @@ jobs:
         run: |
           python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
           printf 'TIKTOKEN_CACHE_DIR=%s\n' "$TIKTOKEN_CACHE_DIR" >> "$GITHUB_ENV"
-      - name: Offline consumer behavior tests
+      - name: Unit and offline demo tests
         env:
-          PYTHONPATH: .:deployment:memory:agent_console:deployment/vendor
+          PYTHONPATH: .:deployment:agent_console
         run: python -m pytest -q
       - name: Documentation, examples and safe CLI help
         run: python scripts/check-docs.py --cli
-      - name: Redacted release boundary audit
+      - name: Release boundary audit
         run: python scripts/audit-release.py
-      - name: Real synthetic rendering and decryption artifacts
-        run: python scripts/generate-demo.py --output "$RUNNER_TEMP/wechat-demo"
-      - name: Compose contract (no services started)
-        env:
-          DESKTOP_PASSWORD: CI_TEST_ONLY_DO_NOT_USE_FOR_A_REAL_DESKTOP
-        run: docker compose config --quiet
-      - name: Installer syntax and dry-run only
-        run: sh -n scripts/install-openwrt.sh && sh scripts/install-openwrt.sh --dry-run
-      - name: Synthetic QQ rendering
-        run: python scripts/generate-demo.py --qq --output "$RUNNER_TEMP/qq-demo"
-      - name: Build isolated runtime image and exercise QQ CLI
+      - name: Offline demo through the CLI (no network needed by the demo itself)
+        run: |
+          CHAT_DIGEST_PYTHON=python ./bin/chat-digest demo --output "$RUNNER_TEMP/demo"
+          CHAT_DIGEST_PYTHON=python ./bin/chat-digest doctor --demo-only
+          CHAT_DIGEST_PYTHON=python ./bin/chat-digest demo --qq --output "$RUNNER_TEMP/qq-demo"
+      - name: Installer and service files
+        run: |
+          sh -n scripts/install.sh scripts/build-release.sh bin/chat-digest
+          ./scripts/install.sh
+          for unit in deployment/services/systemd/*.service; do grep -q '^ExecStart=' "$unit"; done
+      - name: Build isolated runtime image and exercise CLI
         if: matrix.python == '3.12'
         run: |
-          docker build --build-arg WITH_OCR=1 -t wechat-digest-runtime:release-check .
-          docker run --rm --network none --read-only --cap-drop ALL wechat-digest-runtime:release-check /tool/qq_service.py --help
-          docker run --rm --network none --read-only --cap-drop ALL wechat-digest-runtime:release-check -c "from ocr_images import _create_ocr, _recognize; from PIL import Image,ImageDraw,ImageFont; import io; image=Image.new('RGB',(500,130),'white'); ImageDraw.Draw(image).text((20,20),'123456',fill='black',font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',64)); data=io.BytesIO(); image.save(data,format='PNG'); text,lines,confidence=_recognize(data.getvalue(),_create_ocr()); assert '123456' in text.replace(' ',''); print('real OCR digits verified')"
+          docker build --build-arg WITH_OCR=1 -t chat-digest-runtime:ci .
+          docker run --rm --network none --read-only --cap-drop ALL chat-digest-runtime:ci /tool/digest.py --help
+          docker run --rm --network none --read-only --cap-drop ALL chat-digest-runtime:ci /tool/qq_service.py --help
+          docker run --rm --network none --read-only --cap-drop ALL chat-digest-runtime:ci -c "from ocr_images import _create_ocr, _recognize; from PIL import Image,ImageDraw,ImageFont; import io; image=Image.new('RGB',(500,130),'white'); ImageDraw.Draw(image).text((20,20),'123456',fill='black',font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',64)); data=io.BytesIO(); image.save(data,format='PNG'); text,lines,confidence=_recognize(data.getvalue(),_create_ocr()); assert '123456' in text.replace(' ',''); print('real OCR digits verified')"

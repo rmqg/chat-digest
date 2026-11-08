@@ -18,7 +18,6 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
-!examples/synthetic/synthetic-sqlcipher4.db
 all_keys*.json
 passphrase.json
 credentials*.json
@@ -33,3 +32,8 @@ credentials*.json
 build/
 dist/
 *.egg-info/
+
+.cache/
+dist/
+chat-digest-demo/
+qq-digest-demo/

@@ -10,7 +10,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP = {'.git', '.venv', '__pycache__', '.pytest_cache', 'runtime', 'config', 'backups', 'exports'}
+SKIP = {'.git', '.venv', '__pycache__', '.pytest_cache', '.cache', 'dist', 'runtime', 'config', 'backups', 'exports'}
 TEXT = {'.py', '.sh', '.md', '.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.caddy', '.initd', '.txt', '.example'}
 FORBIDDEN = {'all_keys.json', 'passphrase.json', '.env', 'id_rsa', 'id_ed25519'}
 SYNTHETIC_GROUP = '10000000000@chatroom'
@@ -37,9 +37,9 @@ def audit(root: Path, patterns: dict[str, str]) -> list[dict]:
             continue
         if path.name in FORBIDDEN or path.suffix in {'.pem', '.key', '.p12', '.pcap'}:
             findings.append({'file': relative, 'line': 0, 'category': 'secret-or-capture-file'})
-        if path.suffix in {'.db', '.sqlite'} and relative != 'examples/synthetic/synthetic-sqlcipher4.db':
-            findings.append({'file': relative, 'line': 0, 'category': 'database-outside-synthetic-fixture'})
-        if path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'} and not relative.startswith('examples/synthetic/'):
+        if path.suffix in {'.db', '.sqlite', '.sqlite3'}:
+            findings.append({'file': relative, 'line': 0, 'category': 'database-file'})
+        if path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'} and not relative.startswith(('examples/synthetic-export/', 'assets/')):
             findings.append({'file': relative, 'line': 0, 'category': 'media-outside-reviewed-synthetic-examples'})
         if path.suffix not in TEXT and path.name not in {'Dockerfile', 'LICENSE', '.gitignore', '.dockerignore', '.env.example'}:
             continue

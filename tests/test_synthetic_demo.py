@@ -1,16 +1,20 @@
+import importlib.util
 import json
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from memory import decrypt_sync
-
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "examples" / "synthetic"
 
 
-class SyntheticFixtureTests(unittest.TestCase):
+def _demo_module():
+    spec = importlib.util.spec_from_file_location("generate_demo", ROOT / "scripts" / "generate-demo.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class SyntheticDemoTests(unittest.TestCase):
     def test_qq_demo_is_fictional_renderer_only_output(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location("generate_demo", ROOT / "scripts" / "generate-demo.py")
@@ -33,42 +37,33 @@ class SyntheticFixtureTests(unittest.TestCase):
             self.assertIn("虚构", (output / "index.html").read_text(encoding="utf-8"))
             self.assertEqual(len(list((output / "assets").glob("[a-f0-9]*.png"))), 1)
 
-    def test_synthetic_wechat_rank_uses_token_schema(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("generate_demo", ROOT / "scripts" / "generate-demo.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        brief, review, _ = module._records()
-        for report in (brief, review):
-            self.assertTrue(report["participants"])
-            self.assertTrue(all("tokens" in person and "count" not in person for person in report["participants"]))
+    def test_bundled_export_matches_its_generator(self):
+        module = _demo_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            fresh = Path(temporary) / "export"
+            module.write_fixture(fresh)
+            bundled = ROOT / "examples" / "synthetic-export"
+            names = sorted(p.relative_to(fresh).as_posix() for p in fresh.rglob("*") if p.is_file())
+            self.assertEqual(names, sorted(p.relative_to(bundled).as_posix() for p in bundled.rglob("*") if p.is_file()))
+            for name in names:
+                self.assertEqual((fresh / name).read_bytes(), (bundled / name).read_bytes(), name)
 
-    def test_fixture_authenticates_and_wrong_key_or_tampering_fails(self):
-        encrypted = FIXTURE / "synthetic-sqlcipher4.db"
-        key_record = json.loads((FIXTURE / "fixture-key.json").read_text(encoding="utf-8"))
-        self.assertIn("PUBLIC TEST-ONLY", key_record["warning"])
-        key = bytes.fromhex(key_record["derived_enc_key_hex"])
-        salt = bytes.fromhex(key_record["salt_hex"])
-        self.assertEqual(decrypt_sync._derive_enc_key(key_record["key_utf8"].encode("ascii"), salt), key)
-        with tempfile.TemporaryDirectory() as temp:
-            temp = Path(temp)
-            clear = temp / "clear.sqlite"
-            self.assertGreater(decrypt_sync.full_decrypt(encrypted, clear, key), 0)
-            self.assertTrue(decrypt_sync.verify_sqlite(clear))
-            self.assertEqual(clear.read_bytes()[20], 80)
-            with sqlite3.connect(clear) as db:
-                self.assertEqual(db.execute("SELECT count(*) FROM synthetic_messages").fetchone()[0], 2)
-
-            wrong_key, _ = decrypt_sync._keys(decrypt_sync._derive_enc_key(b"wrong-public-test-key", salt), salt)
-            with self.assertRaises(ValueError):
-                decrypt_sync.full_decrypt(encrypted, temp / "wrong.sqlite", wrong_key)
-
-            damaged = temp / "tampered.db"
-            blob = bytearray(encrypted.read_bytes())
-            blob[128] ^= 0x01
-            damaged.write_bytes(blob)
-            with self.assertRaises(ValueError):
-                decrypt_sync.full_decrypt(damaged, temp / "tampered.sqlite", key)
+    def test_offline_demo_runs_the_real_digest_and_contract_sender(self):
+        module = _demo_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "demo"
+            summary = module.generate(output, ROOT / "examples" / "synthetic-export")
+            self.assertEqual(summary["messages"], 7)
+            self.assertEqual(summary["delivery"]["status"], "sent")
+            brief = json.loads(Path(summary["editions"]["brief"]["json"]).read_text(encoding="utf-8"))
+            review = json.loads(Path(summary["editions"]["review"]["json"]).read_text(encoding="utf-8"))
+            self.assertEqual((brief["edition"], review["edition"]), ("brief", "review"))
+            self.assertEqual([quote["text"] for quote in brief["quotes"]], ["标签用防水纸打印，字写大一点，小朋友也能看清。"])
+            self.assertTrue(all(person["tokens"] > 0 for person in brief["participants"]))
+            self.assertTrue(all(avatar["available"] for avatar in brief["avatars"].values()))
+            self.assertEqual(brief["media_understanding"]["images"]["understood"], 1)
+            self.assertTrue(Path(summary["editions"]["review"]["png"]).read_bytes().startswith(b"\x89PNG"))
+            self.assertEqual(len(list((output / "outbox").glob("*.png"))), 1)
 
 
 if __name__ == "__main__":

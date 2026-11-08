@@ -1,0 +1,24 @@
+[Unit]
+Description=Realtime image and evidence preprocessing for chat-digest
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chat-digest
+Group=chat-digest
+SupplementaryGroups=docker
+WorkingDirectory=/opt/chat-digest
+Environment=CHAT_DIGEST_ROOT=/opt/chat-digest
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/chat-digest/runtime
+PrivateTmp=yes
+ExecStart=/usr/bin/python3 deployment/realtime-images.py --serve
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

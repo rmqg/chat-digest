@@ -1,70 +1,33 @@
 #!/usr/bin/env python3
-"""Generate deterministic, wholly fictional WeChat-digest demonstration artifacts."""
+"""Offline demo: build reports from a fictional chat-export/v1 directory with a loopback stand-in model.
+
+No account, no chat client and no internet: the "model" is a tiny HTTP server on 127.0.0.1 that returns a
+deterministic summary, and the "sender" is scripts/demo-chat-send.py, which only writes into a local outbox.
+"""
 from __future__ import annotations
 
 import argparse
-import ctypes
-import ctypes.util
 import hashlib
+import http.server
 import json
+import os
+import shutil
+import subprocess
 import sys
-import xml.etree.ElementTree as ET
+import threading
 from pathlib import Path
-from datetime import datetime, timezone
-
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "examples" / "synthetic"
-TEST_KEY = b"PUBLIC-TEST-ONLY-not-a-real-WeChat-key"
-TEST_HMAC = "PUBLIC TEST-ONLY — synthetic fixture integrity material; never valid for real data"
-FIXTURE_SALT = bytes.fromhex("00112233445566778899aabbccddeeff")
+DEFAULT_EXPORT = ROOT / "examples" / "synthetic-export"
+CONVERSATION = "g_demo_garden"
+START = 1793145600  # 2026-10-28T00:00:00Z
 sys.path.insert(0, str(ROOT))
-from agent_console import daily_report
+sys.path.insert(0, str(ROOT / "deployment"))
+from agent_console import daily_report  # noqa: E402
 
 
 def _save_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-def _exec_sqlite(lib, db, sql: str) -> None:
-    error = ctypes.c_char_p()
-    result = lib.sqlite3_exec(db, sql.encode("utf-8"), None, None, ctypes.byref(error))
-    if result:
-        detail = error.value.decode("utf-8", "replace") if error.value else f"SQLite error {result}"
-        if error.value:
-            lib.sqlite3_free(error)
-        raise RuntimeError(detail)
-
-
-def _create_reserved_sqlite(path: Path) -> None:
-    library = ctypes.util.find_library("sqlite3")
-    if not library:
-        raise RuntimeError("SQLite shared library is required to create reserve-80 fixture pages")
-    lib = ctypes.CDLL(library)
-    lib.sqlite3_open.argtypes = (ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p))
-    lib.sqlite3_open.restype = ctypes.c_int
-    lib.sqlite3_close.argtypes = (ctypes.c_void_p,)
-    lib.sqlite3_file_control.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p)
-    lib.sqlite3_exec.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p))
-    lib.sqlite3_exec.restype = ctypes.c_int
-    lib.sqlite3_free.argtypes = (ctypes.c_void_p,)
-    database = ctypes.c_void_p()
-    result = lib.sqlite3_open(str(path).encode("utf-8"), ctypes.byref(database))
-    if result:
-        raise RuntimeError(f"sqlite3_open failed: {result}")
-    try:
-        _exec_sqlite(lib, database, "PRAGMA page_size=4096")
-        reserve = ctypes.c_int(80)
-        result = lib.sqlite3_file_control(database, b"main", 38, ctypes.byref(reserve))
-        if result:
-            raise RuntimeError(f"SQLite SQLITE_FCNTL_RESERVE_BYTES failed: {result}")
-        _exec_sqlite(lib, database, "CREATE TABLE synthetic_messages (message_id TEXT PRIMARY KEY, participant TEXT NOT NULL, body TEXT NOT NULL)")
-        _exec_sqlite(lib, database, "INSERT INTO synthetic_messages VALUES ('SYN-M001', '林小满', '合成测试消息：周六上午见。'), ('SYN-M002', '周禾', 'PUBLIC TEST-ONLY key fixture。')")
-    finally:
-        lib.sqlite3_close(database)
-    header = path.read_bytes()[:100]
-    if len(header) != 100 or header[:16] != b"SQLite format 3\x00" or header[16:18] != b"\x10\x00" or header[20] != 80:
-        raise RuntimeError("SQLite fixture must have a 4096-byte page size and exactly 80 reserved bytes")
-
 
 def _image(path: Path) -> None:
     try:
@@ -84,77 +47,165 @@ def _image(path: Path) -> None:
     image.save(path, format="PNG", optimize=False)
 
 
-def _records() -> tuple[dict, dict, dict]:
-    start = 1793145600  # 2026-10-28T00:00:00Z
-    end = start + 86400
-    messages = [
-        {"message_uid": "SYN-M001", "reference": "M001", "author_id": "synthetic-alex", "author": "林小满", "timestamp": start + 3600, "type": "text", "text": "周末的社区花园活动改到周六上午，入口旁边集合。"},
-        {"message_uid": "SYN-M002", "reference": "M002", "author_id": "synthetic-bo", "author": "周禾", "timestamp": start + 3900, "type": "text", "text": "收到，我会带上工具箱。"},
-        {"message_uid": "SYN-M003", "reference": "M003", "author_id": "synthetic-cen", "author": "陈星", "timestamp": start + 4200, "type": "reply", "text": "我可以负责准备标签。\n引用 林小满：周末的社区花园活动改到周六上午，入口旁边集合。", "reply_to": "SYN-M001"},
-        {"message_uid": "SYN-M004", "reference": "M004", "author_id": "synthetic-alex", "author": "林小满", "timestamp": start + 7200, "type": "forward", "text": "转发：社区花园分区安排\nA区：香草\nB区：花苗", "forward_xml": "forward.xml"},
-        {"message_uid": "SYN-M005", "reference": "M005", "author_id": "synthetic-bo", "author": "周禾", "timestamp": start + 10800, "type": "image", "text": "示意图已附（合成图，不是聊天原图）。", "image": "garden-plan.png", "missing_image_reference": "synthetic-missing-image.png"},
+
+def _avatar(path: Path, color: str) -> None:
+    from PIL import Image, ImageDraw
+    image = Image.new("RGB", (96, 96), "#ffffff")
+    ImageDraw.Draw(image).ellipse((8, 8, 88, 88), fill=color)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, format="PNG", optimize=False)
+
+
+def _media(root: Path, source: Path, ext: str = "png") -> dict:
+    payload = source.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    relative = f"media/{digest[:2]}/{digest}.{ext}"
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    return {"path": relative, "sha256": digest, "bytes": len(payload), "mime": "image/png"}
+
+
+def write_fixture(root: Path) -> None:
+    """Deterministic fictional export; every person, message and picture is invented."""
+    if root.exists():
+        shutil.rmtree(root)
+    scratch = root / ".build"
+    _image(scratch / "garden-plan.png")
+    people = [("u_lin", "林小满", "#9cc3e6"), ("u_zhou", "周禾", "#a8d5a2"), ("u_chen", "陈星", "#f2c48d")]
+    members = []
+    for sender, name, color in people:
+        _avatar(scratch / f"{sender}.png", color)
+        members.append({"id": sender, "name": name, "avatar": _media(root, scratch / f"{sender}.png")["path"]})
+    picture = _media(root, scratch / "garden-plan.png")
+    rows = [
+        {"id": "m001", "ts": START + 3600, "sender_id": "u_lin", "sender_name": "林小满", "type": "text",
+         "text": "周末的社区花园活动改到周六上午，入口旁边集合。"},
+        {"id": "m002", "ts": START + 3900, "sender_id": "u_zhou", "sender_name": "周禾", "type": "text",
+         "text": "收到，我会带上工具箱，顺便把旧花盆清理出来。"},
+        {"id": "m003", "ts": START + 4200, "sender_id": "u_chen", "sender_name": "陈星", "type": "quote",
+         "text": "我可以负责准备植物标签。", "reply_to": {"id": "m001", "sender_name": "林小满",
+                                                   "text": "周末的社区花园活动改到周六上午，入口旁边集合。"}},
+        {"id": "m004", "ts": START + 7200, "sender_id": "u_lin", "sender_name": "林小满", "type": "forward",
+         "forward": [{"sender_name": "社区志愿者", "ts": START + 7000, "type": "text", "text": "A区：香草；B区：花苗"}]},
+        {"id": "m005", "ts": START + 10800, "sender_id": "u_zhou", "sender_name": "周禾", "type": "image",
+         "media": [{"kind": "image", "status": "ready", "is_thumbnail": False, **picture}]},
+        {"id": "m006", "ts": START + 11000, "sender_id": "u_chen", "sender_name": "陈星", "type": "link",
+         "link": {"url": "https://example.org/garden-guide", "title": "城市小花园入门（虚构链接）", "description": "示例链接，demo 不联网抓取"}},
+        {"id": "m007", "ts": START + 14400, "sender_id": "u_chen", "sender_name": "陈星", "type": "text",
+         "text": "标签用防水纸打印，字写大一点，小朋友也能看清。"},
     ]
-    names = {message["author_id"]: message["author"] for message in messages}
-    tokens = {identity: 0 for identity in names}
-    for message in messages:
-        tokens[message["author_id"]] += daily_report.message_body_token_count(message["text"], message["type"])
-    participants = [{"account_id": identity, "name": names[identity], "tokens": tokens[identity]}
-                    for identity in sorted(tokens, key=lambda key: (-tokens[key], key))]
-    refs = [{"message_uid": m["message_uid"], "reference": m["reference"], "author": m["author"], "author_id": m["author_id"], "timestamp": m["timestamp"], "type": m["type"], "text": m["text"]} for m in messages]
-    refs[-1]['image_src'] = 'garden-plan.png'
-    buckets = daily_report.build_rhythm_buckets((message['timestamp'] for message in messages), start, end)
-    for bucket in buckets:
-        bucket['label'] = datetime.fromtimestamp(bucket['start_unix'], timezone.utc).strftime('%Y-%m-%d %H:%M')
-    common = {
-        "chat_username": "synthetic-demo-chat", "chat_display": "合成示例群（虚构）", "day": "2026-10-28",
-        "generated_at": "2026-10-29T00:00:00+00:00", "range_text": "2026-10-28 00:00–2026-10-29 00:00（UTC）",
-        "window": {"start_unix": start, "end_unix_exclusive": end},
-        "timezone": "UTC",
-        "stats": {"messages": 5, "members": 3, "groups": 1, "images": 1},
-        "one_line": "合成示例：成员协商周六的社区花园活动安排，并分配了准备工作。",
-        "topics": [{"topic": "社区花园活动安排", "summary": "活动定在周六上午，成员讨论集合地点与物资分工。", "details": ["林小满提出在入口旁集合。", "周禾准备工具箱，陈星负责标签。", "转发内容展示了虚构的分区安排。"], "message_ids": [m['message_uid'] for m in messages], "reference_ids": [m['reference'] for m in messages], "references": refs, "start_unix": start + 3600, "end_unix": start + 10800, "participant_ids": ["synthetic-alex", "synthetic-bo", "synthetic-cen"]}],
-        "participants": participants, "active_rank": participants,
-        "leaders": {"talk": participants[0] if participants else {"name": "--", "tokens": 0}, "peak": {"name": "2026-10-28 01:00", "count": 2}},
-        "rhythm_buckets": buckets,
-        "quotes": [{"speaker": "周禾", "speaker_id": "synthetic-bo", "text": refs[1]['text'], "time": "01:05", "source": refs[1]}],
-        "avatars": {}, "synthetic_example": True,
-    }
-    brief = {**common, "edition": "brief"}
-    review = {**common, "edition": "review"}
-    snapshot = {"synthetic_example": True, "group_id": "synthetic-demo-chat", "window": common["window"], "messages": messages}
-    return brief, review, snapshot
+    (root / "conversations").mkdir(parents=True, exist_ok=True)
+    (root / "members").mkdir(parents=True, exist_ok=True)
+    (root / "conversations" / f"{CONVERSATION}.jsonl").write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    (root / "members" / f"{CONVERSATION}.json").write_text(json.dumps(
+        {"conversation_id": CONVERSATION, "updated_at": START, "members": members}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest = {"schema": "chat-export/v1", "producer": {"name": "chat-digest-demo", "version": "2.0.0"},
+                "source": {"platform": "other", "account_id": "demo_account"},
+                "generated_at": "2026-10-29T08:00:00+08:00", "timezone": "Asia/Shanghai",
+                "conversations": [{"id": CONVERSATION, "kind": "group", "name": "合成示例群（虚构）",
+                                   "file": f"conversations/{CONVERSATION}.jsonl", "members_file": f"members/{CONVERSATION}.json",
+                                   "last_ts": rows[-1]["ts"], "message_count": len(rows)}]}
+    (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (root / "README.md").write_text("# 合成 chat-export/v1 样本\n\n全部人物、消息、图片均为虚构，供 `scripts/generate-demo.py` 离线演示和测试使用。"
+                                   "格式见 `docs/CONTRACT.md`。\n", encoding="utf-8")
+    shutil.rmtree(scratch)
 
 
-def _xml(path: Path) -> None:
-    forward = ET.Element("msg")
-    app = ET.SubElement(forward, "appmsg")
-    ET.SubElement(app, "title").text = "社区花园分区安排（虚构转发）"
-    ET.SubElement(app, "des").text = "合成的转发消息，用于展示安全解析。"
-    record = ET.SubElement(app, "recorditem")
-    info = ET.SubElement(record, "recordinfo")
-    for title, text in (("A区", "香草"), ("B区", "花苗")):
-        item = ET.SubElement(info, "dataitem", datatype="1")
-        ET.SubElement(item, "datadesc").text = title + "：" + text
-    ET.indent(forward, space="  ")
-    ET.ElementTree(forward).write(path / "forward.xml", encoding="utf-8", xml_declaration=True)
-    reply = ET.Element("msg")
-    ET.SubElement(reply, "refermsg", type="1").text = "周末的社区花园活动改到周六上午，入口旁边集合。"
-    ET.indent(reply, space="  ")
-    ET.ElementTree(reply).write(path / "reply.xml", encoding="utf-8", xml_declaration=True)
+def _summary(contents: dict, edition: str) -> dict:
+    refs = [message["reference"] for message in contents["messages"]]
+    topics = [{"title": "社区花园周六活动安排", "summary": "活动改到周六上午在入口集合，成员认领了工具箱和植物标签。",
+               "details": [] if edition == "brief" else ["周禾带工具箱并清理旧花盆。", "陈星负责防水纸打印的大字标签。"],
+               "message_ids": refs[:3] + refs[-1:]},
+              {"title": "分区安排与示意图", "summary": "转发了虚构的分区安排，并附上一张合成示意图和一篇参考链接。",
+               "details": [] if edition == "brief" else ["A区种香草，B区种花苗。"], "message_ids": refs[3:6]}]
+    quotes = [item["candidate_index"] for item in contents.get("quote_candidates", [])
+              if "防水纸" in item["text"]][:1]
+    return {"one_line": "合成示例：成员确定周六上午的社区花园活动，并分好了准备工作。", "topics": topics, "quotes": quotes}
 
 
-def _encrypted_fixture(path: Path) -> None:
-    from memory import decrypt_sync
-    plain = path / "synthetic-plain.sqlite"
-    encrypted = path / "synthetic-sqlcipher4.db"
-    plain.unlink(missing_ok=True)
-    _create_reserved_sqlite(plain)
-    decrypt_sync.encrypt_sqlite(plain, encrypted, TEST_KEY, salt=FIXTURE_SALT)
-    plain.unlink()
-    enc_key = decrypt_sync._derive_enc_key(TEST_KEY, FIXTURE_SALT)
-    _, mac_key = decrypt_sync._keys(enc_key, FIXTURE_SALT)
-    _save_json(path / "fixture-key.json", {"warning": TEST_HMAC, "key_utf8": TEST_KEY.decode("ascii"), "salt_hex": FIXTURE_SALT.hex(), "derived_enc_key_hex": enc_key.hex(), "derived_hmac_key_hex": mac_key.hex(), "cipher": "SQLCipher v4 compatible; page_size=4096; reserve=80; HMAC=SHA-512"})
-    _save_json(path / "fixture-integrity.json", {"warning": TEST_HMAC, "hmac_sha256_file": hashlib.sha256(encrypted.read_bytes()).hexdigest(), "tamper_test_byte_offset": 128})
+class _StandInModel(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        request = json.loads(self.rfile.read(length))
+        name = request["response_format"]["json_schema"]["name"]
+        contents = json.loads(request["messages"][1]["content"])
+        content = json.dumps(_summary(contents, "brief" if name.endswith("brief") else "review"), ensure_ascii=False)
+        chunks = [{"choices": [{"index": 0, "delta": {"role": "assistant", "content": content}}], "model": "demo-stand-in"},
+                  {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "model": "demo-stand-in"}]
+        body = "".join("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        payload = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def generate(output: Path, export: Path, *, send: bool = True) -> dict:
+    import chat_export
+    if output.exists():
+        shutil.rmtree(output)
+    work, reports = output / "work", output / "reports"
+    for directory in (work, reports):
+        directory.mkdir(parents=True, mode=0o700)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StandInModel)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        model = output / "model.json"
+        _save_json(model, {"base_url": f"http://127.0.0.1:{server.server_address[1]}/v1", "model": "demo-stand-in",
+                           "api_key": "demo-only-not-a-secret"})
+        project = output / "project.json"
+        sender = [sys.executable, str(ROOT / "scripts" / "demo-chat-send.py"), "--outbox", str(output / "outbox")]
+        _save_json(project, {"export": {"root": str(export)}, "group": {"conversation_id": CONVERSATION, "name": "合成示例群（虚构）"},
+                             "send": {"command": sender, "to": "合成示例群（虚构）", "timeout": 60},
+                             "report_prefix": "chat-digest-demo", "timezone": "Asia/Shanghai"})
+        manifest = chat_export.load_manifest(export)
+        _conv, messages = chat_export.read_messages(export, CONVERSATION, START, START + 86400, manifest=manifest)
+        understanding = {m["message_uid"]: {"status": "success", "model": "demo-stand-in", "source_quality": "original",
+                                            "result": {"description": "合成的社区花园分区示意图，含三条彩色分区。",
+                                                       "visible_text": "", "facts": ["示意图为虚构插画"], "uncertainties": []}}
+                         for m in messages if m["type"] == "image"}
+        understanding_path = output / "image-understanding.json"
+        _save_json(understanding_path, understanding)
+        env = {**os.environ, "CHAT_DIGEST_CONFIG": str(project), "PYTHONPATH": os.pathsep.join(
+            [str(ROOT / "deployment"), str(ROOT / "agent_console")]), "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            env.pop(key, None)
+        completed = subprocess.run([sys.executable, str(ROOT / "deployment" / "digest.py"), "--export-root", str(export),
+                                    "--runtime-dir", str(work), "--output-dir", str(reports), "--start", str(START),
+                                    "--end", str(START + 86400), "--model-config", str(model),
+                                    "--image-understanding", str(understanding_path)],
+                                   env=env, capture_output=True, text=True, timeout=300)
+        if completed.returncode:
+            raise RuntimeError("demo digest failed: " + completed.stderr[-2000:])
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+    finally:
+        server.shutdown()
+    delivery = None
+    if send:
+        sys.path.insert(0, str(ROOT / "deployment"))
+        import chat_send
+        config = chat_send.send_config(json.loads(project.read_text(encoding="utf-8")))
+        png = Path(result["editions"]["brief"]["png"])
+        rid = chat_send.request_id("demo", CONVERSATION, hashlib.sha256(png.read_bytes()).hexdigest())
+        delivery = chat_send.send(config, rid=rid, image=png)
+        again = chat_send.send(config, rid=rid, image=png)
+        if delivery["status"] != "sent" or again.get("detail") != "already sent (idempotent replay)":
+            raise RuntimeError("demo sender did not follow chat-send/v1")
+    links = "".join(f"<li>{edition}: <a href=\"reports/{Path(files['html']).name}\">HTML</a> · "
+                    f"<a href=\"reports/{Path(files['png']).name}\">PNG</a></li>" for edition, files in result["editions"].items())
+    (output / "index.html").write_text("<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>chat-digest 离线演示</title>"
+                                       "<body><h1>chat-digest 离线演示</h1><p>全部内容虚构；总结来自本机回环的演示模型，不是真实 AI 效果。</p>"
+                                       f"<ul>{links}</ul></body></html>\n", encoding="utf-8")
+    summary = {"status": "ok", "output": str(output), "editions": result["editions"], "messages": result["stats"].get("messages"),
+               "delivery": delivery and {"status": delivery["status"], "outbox": str(output / "outbox")}}
+    _save_json(output / "demo-result.json", summary)
+    return summary
 
 
 def generate_qq_demo(output: Path) -> None:
@@ -226,36 +277,26 @@ def generate_qq_demo(output: Path) -> None:
     (output / "index.html").write_text(index, encoding="utf-8")
 
 
-def generate(output: Path) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    brief, review, snapshot = _records()
-    _save_json(output / "brief.json", brief)
-    _save_json(output / "review.json", review)
-    _save_json(output / "brief.sources.json", snapshot)
-    _save_json(output / "review.sources.json", snapshot)
-    _xml(output)
-    _image(output / "garden-plan.png")
-    _encrypted_fixture(output)
-
-    for name, report in (("brief", brief), ("review", review)):
-        html = daily_report.render_html(report)
-        (output / f"{name}.html").write_text(html, encoding="utf-8")
-        daily_report.render_png_pillow(report, output / f"{name}.png")
-    index = """<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>合成示例日报</title><body><main><h1>合成示例日报</h1><p>以下内容及图片均为虚构；这是渲染/解密示例，不是真实 AI 生成证明。</p><ul><li><a href=\"brief.html\">简报 HTML</a> · <a href=\"brief.png\">简报 PNG</a></li><li><a href=\"review.html\">回顾 HTML</a> · <a href=\"review.png\">回顾 PNG</a></li></ul><img src=\"garden-plan.png\" alt=\"合成社区花园示意图\" width=\"360\"></main></body></html>\n"""
-    (output / "index.html").write_text(index, encoding="utf-8")
-
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, help="destination directory (default: examples/synthetic or examples/qq-synthetic with --qq)")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--output", type=Path, help="destination directory (default: ./chat-digest-demo, or ./qq-digest-demo with --qq)")
+    parser.add_argument("--export", type=Path, default=DEFAULT_EXPORT, help="chat-export/v1 directory to read (default: bundled sample)")
+    parser.add_argument("--no-send", action="store_true", help="skip the local demo sender")
+    parser.add_argument("--write-fixture", type=Path, help="regenerate the bundled fictional export into this directory and exit")
     parser.add_argument("--qq", action="store_true", help="generate fictional QQ renderer fixtures only; no network or model")
     args = parser.parse_args()
-    output = args.output.resolve() if args.output else (ROOT / "examples" / ("qq-synthetic" if args.qq else "synthetic")).resolve()
+    if args.write_fixture:
+        write_fixture(args.write_fixture.resolve())
+        print(json.dumps({"status": "ok", "fixture": str(args.write_fixture.resolve())}))
+        return
     if args.qq:
+        output = (args.output or Path("qq-digest-demo")).resolve()
         generate_qq_demo(output)
-    else:
-        generate(output)
-    print(f"Generated {'fictional QQ' if args.qq else 'fictional'} demo artifacts in {output}")
+        print(f"Generated fictional QQ demo artifacts in {output}")
+        return
+    summary = generate((args.output or Path("chat-digest-demo")).resolve(), args.export.resolve(), send=not args.no_send)
+    print(json.dumps(summary, ensure_ascii=False))
 
 
 if __name__ == "__main__":

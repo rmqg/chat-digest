@@ -93,12 +93,12 @@ def safe_cli_help(root: Path) -> tuple[list[str], int]:
     for key in list(environment):
         if key.startswith(('CHAT_DIGEST_', 'WECHAT_DIGEST_', 'WECHATAGENT_')):
             environment.pop(key)
-    with tempfile.TemporaryDirectory(prefix='wechat-doc-check-') as private:
+    with tempfile.TemporaryDirectory(prefix='chat-digest-doc-check-') as private:
         environment.update(CHAT_DIGEST_ROOT=str(root), CHAT_DIGEST_CONFIG=str(Path(private) / 'not-configured.json'))
-        environment['PYTHONPATH'] = os.pathsep.join(str(root / part) for part in ('', 'deployment', 'memory', 'agent_console', 'deployment/vendor'))
+        environment['PYTHONPATH'] = os.pathsep.join(str(root / part) for part in ('', 'deployment', 'agent_console'))
         candidates = [*sorted((root / 'deployment').glob('*.py')),
-                      root / 'memory/decrypt_sync.py', root / 'memory/memory_ingest.py', root / 'memory/media_sync.py',
-                      root / 'agent_console/daily_report.py', root / 'scripts/generate-demo.py']
+                      root / 'agent_console/daily_report.py', root / 'scripts/generate-demo.py',
+                      root / 'scripts/doctor.py', root / 'scripts/demo-chat-send.py']
         for path in candidates:
             if not path.exists() or path.name.startswith('test_'):
                 continue

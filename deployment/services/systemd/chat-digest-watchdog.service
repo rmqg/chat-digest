@@ -1,0 +1,19 @@
+[Unit]
+Description=Delivery watchdog tick (Bark notifications, optional)
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=chat-digest
+Group=chat-digest
+SupplementaryGroups=docker
+WorkingDirectory=/opt/chat-digest
+Environment=CHAT_DIGEST_ROOT=/opt/chat-digest
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/chat-digest/runtime
+PrivateTmp=yes
+ExecStart=/usr/bin/python3 deployment/daily-watchdog.py --tick
+TimeoutStartSec=4h

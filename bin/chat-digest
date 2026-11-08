@@ -1,0 +1,50 @@
+#!/bin/sh
+# chat-digest command entry. Uses the project virtualenv when present, else python3 on PATH.
+set -eu
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+PY=${CHAT_DIGEST_PYTHON:-}
+if [ -z "$PY" ]; then
+    if [ -x "$HERE/.venv/bin/python" ]; then PY=$HERE/.venv/bin/python; else PY=python3; fi
+fi
+: "${TIKTOKEN_CACHE_DIR:=$HERE/.cache/tiktoken}"
+export TIKTOKEN_CACHE_DIR
+export PYTHONPATH="$HERE/deployment:$HERE/agent_console${PYTHONPATH:+:$PYTHONPATH}"
+cmd=${1:-help}
+[ "$#" -gt 0 ] && shift
+case "$cmd" in
+    demo)               exec "$PY" "$HERE/scripts/generate-demo.py" "$@" ;;
+    doctor)             exec "$PY" "$HERE/scripts/doctor.py" "$@" ;;
+    init)               exec "$PY" "$HERE/deployment/bootstrap.py" --init-runtime "$@" ;;
+    pin-images)         exec "$PY" "$HERE/deployment/bootstrap.py" --pin-images "$@" ;;
+    check)              exec "$PY" "$HERE/deployment/bootstrap.py" --check "$@" ;;
+    list-conversations) exec "$PY" "$HERE/deployment/chat_export.py" "$@" list ;;
+    check-export)       exec "$PY" "$HERE/deployment/chat_export.py" "$@" ;;
+    run)                exec "$PY" "$HERE/deployment/run-digest.py" "$@" ;;
+    daily-tick)         exec "$PY" "$HERE/deployment/daily-job.py" --tick "$@" ;;
+    prepare-only)       exec "$PY" "$HERE/deployment/daily-job.py" --prepare-only "$@" ;;
+    on-demand)          exec "$PY" "$HERE/deployment/on-demand.py" "$@" ;;
+    watchdog)           exec "$PY" "$HERE/deployment/daily-watchdog.py" "$@" ;;
+    qq)                 exec "$PY" "$HERE/deployment/qq_service.py" "$@" ;;
+    version)            cat "$HERE/VERSION" ;;
+    help|-h|--help)
+        cat <<'USAGE'
+usage: chat-digest <command> [options]
+
+  demo                 offline demo from the bundled fictional chat-export (no account, no network)
+  doctor               read-only self-check with fix suggestions (--probe-send: sender dry run)
+  init                 create the private runtime/ directory and project.json template
+  pin-images           pin the locally built runtime image ID
+  check                verify image pins and runtime directories
+  list-conversations   --export-root DIR : list conversations in a chat-export/v1 directory
+  check-export         --export-root DIR check --conversation-id ID : validate one conversation
+  run                  generate reports now (Docker): --hours 24
+  prepare-only         generate today's daily reports without sending
+  daily-tick           one scheduler tick: generate when due and deliver via chat-send/v1
+  on-demand            --serve | --once | --status : "@bot summarize" requests
+  watchdog             --tick | --check-config : delivery watchdog (Bark)
+  qq                   QQ OneBot service (see docs/QQ.md)
+  version              print the version
+USAGE
+        ;;
+    *) printf 'unknown command: %s (try: chat-digest help)\n' "$cmd" >&2; exit 2 ;;
+esac
