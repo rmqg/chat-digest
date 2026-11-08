@@ -13,7 +13,7 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 import urllib.request
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 
 import settings
 
@@ -129,7 +129,7 @@ def load_config(path: Path) -> dict:
     url = urlsplit(config["bark_url"])
     if url.scheme not in ("http", "https") or not url.netloc or url.username or url.password:
         raise ValueError("invalid notification URL")
-    ZoneInfo(config["timezone"])
+    project_zone(config["timezone"])
     for key, low, high in (("daily_hour", 0, 23), ("daily_minute", 0, 59), ("overdue_minutes", 1, 1440),
                            ("fault_grace_minutes", 0, 1440)):
         if type(config[key]) is not int or not low <= config[key] <= high:
@@ -154,7 +154,7 @@ def init_config(source: Path, destination: Path) -> None:
 
 
 def observe(delivery: dict, config: dict, now: float) -> tuple[str, str]:
-    tz = ZoneInfo(config["timezone"])
+    tz = project_zone(config["timezone"])
     local = datetime.fromtimestamp(now, tz)
     day = local.date().isoformat()
     cutoff = local.replace(hour=config["daily_hour"], minute=config["daily_minute"], second=0, microsecond=0)
@@ -265,7 +265,7 @@ def tick(config_path=CONFIG, state_path=STATE, delivery_path=DELIVERY, *, now=No
             except FileNotFoundError:
                 delivery = {}
             except (ValueError, OSError):
-                tz = ZoneInfo(config['timezone'])
+                tz = project_zone(config['timezone'])
                 delivery = {'report_day': datetime.fromtimestamp(stamp, tz).date().isoformat(), 'status': 'unreadable', 'stage': 'delivery-state-read'}
             day, status = observe(delivery, config, stamp)
             try:
@@ -273,7 +273,7 @@ def tick(config_path=CONFIG, state_path=STATE, delivery_path=DELIVERY, *, now=No
             except FileNotFoundError:
                 state = {}
             except (ValueError, OSError):
-                tz = ZoneInfo(config['timezone'])
+                tz = project_zone(config['timezone'])
                 day = datetime.fromtimestamp(stamp, tz).date().isoformat()
                 status = 'unreadable'
                 delivery = {'report_day': day, 'status': 'unreadable', 'stage': 'state-read'}

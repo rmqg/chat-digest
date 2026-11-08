@@ -100,6 +100,18 @@ def check_runtime(project_path: Path | None) -> dict | None:
         return None
 
 
+def check_timezone(project: dict) -> None:
+    import timezones
+    name = project.get("timezone", "Asia/Shanghai")
+    try:
+        timezones.project_zone(name)
+    except ValueError as exc:
+        report("timezone", "fail", str(exc), "install the tzdata package or set a zone without daylight saving time")
+        return
+    detail = f"{name}: fixed offset (this host has no time zone database)" if timezones.uses_fixed_offset(name) else name
+    report("timezone", "ok", detail)
+
+
 def check_export(project: dict) -> None:
     import chat_export
     import settings
@@ -226,6 +238,7 @@ def main(argv=None) -> int:
     if not args.demo_only:
         project = check_runtime(args.config)
         if project:
+            check_timezone(project)
             check_export(project)
             check_model()
             check_sender(project, args.probe_send)

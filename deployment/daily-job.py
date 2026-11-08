@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, time as day_time, timedelta
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 import fcntl
 import hashlib
 import json
@@ -22,7 +22,7 @@ RUNTIME = settings.RUNTIME
 PROJECT = settings.load_project()
 GROUP_ID = PROJECT.get("group", {}).get("conversation_id")
 REPORT_PREFIX = PROJECT["report_prefix"]
-TZ = ZoneInfo(PROJECT["timezone"])
+TZ = project_zone(PROJECT["timezone"])
 PREPARE_AT = day_time(int(PROJECT["daily_hour"]), 0)
 STATE = RUNTIME / "digest" / "delivery-state.json"
 LOCK = RUNTIME / "digest" / "delivery.lock"
@@ -45,7 +45,7 @@ def _runtime_root() -> Path:
 
 def _apply_project_timing(project: dict) -> None:
     global TZ, PREPARE_AT, REPORT_PREFIX
-    TZ = ZoneInfo(project["timezone"])
+    TZ = project_zone(project["timezone"])
     PREPARE_AT = day_time(int(project["daily_hour"]), 0)
     REPORT_PREFIX = project["report_prefix"]
 

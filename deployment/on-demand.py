@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 import time
 
 import chat_export
@@ -218,7 +218,7 @@ def _sha256(path: Path) -> str:
 
 
 def _report_day(timestamp: int) -> str:
-    return datetime.fromtimestamp(timestamp, ZoneInfo(_project()["timezone"])).date().isoformat()
+    return datetime.fromtimestamp(timestamp, project_zone(_project()["timezone"])).date().isoformat()
 
 
 def _failure(job: dict, stage: str, *, retry=True, delay=None) -> dict:

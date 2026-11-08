@@ -10,14 +10,14 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 
 import chat_export
 import settings
 from model_fallback import is_fallback_error, providers as model_providers
 
 PROJECT = settings.load_project()
-TZ = ZoneInfo(PROJECT["timezone"])
+TZ = project_zone(PROJECT["timezone"])
 
 
 def _norm(value: str) -> str:

@@ -15,7 +15,7 @@ import urllib.request
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -342,7 +342,7 @@ def _structured_request(config, schema, prompt, contents, diagnostics_dir, name,
 
 
 def validate_summary(summary: dict, messages: list[dict]) -> dict:
-    tz = ZoneInfo(settings.load_project()['timezone'])
+    tz = project_zone(settings.load_project()['timezone'])
     by_id = {m["reference"]: m for m in messages}
     topics = summary.get("topics")
     quotes = summary.get("quotes")
@@ -409,7 +409,7 @@ def validate_summary(summary: dict, messages: list[dict]) -> dict:
 def enrich_report(report: dict, messages: list[dict], start: int, end: int, avatars: dict, *,
                   text_is_original: bool = False) -> dict:
     """Join display metadata and rank speakers by exact readable-body tokens."""
-    tz = ZoneInfo(report.get('timezone') or settings.load_project()['timezone'])
+    tz = project_zone(report.get('timezone') or settings.load_project()['timezone'])
     report['timezone'] = tz.key
     by_uid = {message["message_uid"]: message for message in messages}
     if len(by_uid) != len(messages):
@@ -481,7 +481,7 @@ def _parse_time(value: str | int | None, fallback: int) -> int:
         return int(value)
     parsed = dt.datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=ZoneInfo(settings.load_project()['timezone']))
+        parsed = parsed.replace(tzinfo=project_zone(settings.load_project()['timezone']))
     return int(parsed.timestamp())
 
 
@@ -562,7 +562,7 @@ def _run(args: argparse.Namespace) -> int:
                            for message in understood_images)
     out = Path(args.output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    tz = ZoneInfo(project["timezone"])
+    tz = project_zone(project["timezone"])
     stamp = dt.datetime.fromtimestamp(start, tz).strftime("%Y%m%d-%H%M")
     base = project["report_prefix"] + "-" + (f"request-{args.request_id}" if getattr(args, 'request_id', None) else stamp)
     editions = {}

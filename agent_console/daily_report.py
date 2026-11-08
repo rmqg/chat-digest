@@ -10,14 +10,20 @@ import sys
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 try:
     from .report_metrics import body_chinese_count, body_token_count, message_body_token_count, peak_time_text
 except ImportError:  # direct script execution
     from report_metrics import body_chinese_count, body_token_count, message_body_token_count, peak_time_text
 
-DISPLAY_TZ = ZoneInfo('Asia/Shanghai')
+try:
+    from timezones import project_zone
+except ImportError:  # the deployment directory is not on sys.path
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'deployment'))
+    from timezones import project_zone
+
+DISPLAY_TZ = project_zone('Asia/Shanghai')
 
 RHYTHM_CHART_CSS = """
 .rhythm-chart{width:100%;height:auto;display:block}.rhythm-chart .grid{stroke:#e6eaf0;stroke-width:1}
@@ -38,7 +44,7 @@ def _report_timezone(report=None):
     if not name:
         return DISPLAY_TZ
     try:
-        return ZoneInfo(str(name))
+        return project_zone(str(name))
     except (KeyError, ValueError) as exc:
         raise ValueError(f'Unsupported report timezone: {name}') from exc
 

@@ -12,7 +12,7 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 import settings
 
 import source_media
@@ -29,7 +29,7 @@ _PROJECT = settings.load_project()
 TARGET_GROUP = _PROJECT.get('group', {}).get('conversation_id', '')
 TARGET_IDS = settings.conversation_ids(_PROJECT) if TARGET_GROUP else set()
 REPORT_PREFIX = _PROJECT['report_prefix']
-DISPLAY_TZ = ZoneInfo(_PROJECT['timezone'])
+DISPLAY_TZ = project_zone(_PROJECT['timezone'])
 DAILY_HOUR = _PROJECT['daily_hour']
 _DATA_URI_RE = re.compile(r"data:([\w.+-]+/[\w.+-]+)(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=\r\n]+)", re.IGNORECASE)
 _EXTENSIONS = {

@@ -11,7 +11,7 @@ import time
 from datetime import datetime, time as datetime_time, timedelta
 
 import hashlib
-from zoneinfo import ZoneInfo
+from timezones import project_zone
 
 import settings
 ROOT = settings.ROOT
@@ -23,7 +23,7 @@ POLL_SECONDS = 15
 RECHECK_SECONDS = 600
 # New messages arrive constantly; without a gap the whole window would be reprocessed back to back.
 MIN_GAP_SECONDS = 120
-TZ = ZoneInfo(settings.load_project().get("timezone", "Asia/Shanghai"))
+TZ = project_zone(settings.load_project().get("timezone", "Asia/Shanghai"))
 STOP = False
 
 
