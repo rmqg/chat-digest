@@ -1,143 +1,68 @@
-# 文档与发行校验
+# 实测记录（v2.0.0）
 
-## 校验目标
+本页只记录真正执行过的验证。没有列在这里的组合，都按 [COMPATIBILITY.md](COMPATIBILITY.md) 里的“未测试 / 不保证”对待。
 
-“命令能复制”至少包含三层：文档自身的路径/链接/JSON语法一致；CLI 实际接受写下的参数；在有授权环境中完成真实动作。前两层可自动化且必须在发布前执行；第三层涉及本人微信登录、手机确认、模型费用或发送，不能由一个静态检查器冒充。
+## 1. 单元测试和离线 demo 测试
 
-## 1. 本地文档与 CLI 检查
-
-```sh
-python scripts/check-docs.py
-python scripts/check-docs.py --cli
-```
-
-基础模式检查仓库 Markdown 的本地链接、标题锚点、围栏闭合和配置示例 JSON。`--cli` 在没有 live 项目配置的临时环境中仅运行解析器的 `--help`，要求在期限内正常返回 usage；不会执行采集、模型、GUI或发送。它不执行文档里任意 shell 代码，也不把 `sudo`/网络动作伪装成校验。
-
-如果报告缺链接，修正文档或补齐真实文件；不要删掉检查来让文档“通过”。如果 CLI 在 `--help` 前就附加进程、发网络请求或要求群 ID，应修复入口的副作用顺序。
-
-## 2. 配置与安装模板
-
-先按部署手册准备测试 `.env`，再执行：
+环境：Ubuntu 22.04.5 LTS，内核 6.8.0-59-generic，x86-64。
 
 ```sh
-docker compose config --quiet
-sh -n scripts/install-openwrt.sh
-sh scripts/install-openwrt.sh --dry-run
+PYTHONPATH=.:deployment:agent_console TIKTOKEN_CACHE_DIR=… python -m pytest -q
 ```
 
-安装器可在临时文件系统根做应用验证：
+| Python | 结果 |
+|---|---|
+| 3.12.16 | 298 passed |
+| 3.11.18 | 298 passed |
+
+另外：`scripts/check-docs.py --cli` 检查全部文档内链接、示例 JSON 和 27 个脚本的 `--help`；`scripts/audit-release.py` 发布边界审计 0 项。
+
+## 2. 干净容器按文档安装
+
+宿主：macOS 27.2 arm64 上的 OrbStack，Docker 29.4.0，虚拟机内核 7.0.14-orbstack。amd64 用 `--platform linux/amd64` 模拟运行。
+
+每个容器都是全新的官方镜像，只读挂载本地构建的发布包和 `SHA256SUMS`，执行 [`scripts/validate-clean.sh`](../scripts/validate-clean.sh)。脚本严格按 [INSTALL.md](INSTALL.md) 的顺序：
 
 ```sh
-mkdir -p /tmp/wechat-openwrt-root/etc/crontabs
-printf '%s\n' '# unrelated test cron entry' > /tmp/wechat-openwrt-root/etc/crontabs/root
-sh scripts/install-openwrt.sh --root /tmp/wechat-openwrt-root --apply
-sh scripts/install-openwrt.sh --root /tmp/wechat-openwrt-root --apply
+apt-get install -y python3 python3-venv ca-certificates
+sha256sum -c SHA256SUMS                       # chat-digest-2.0.0.tar.gz: OK
+tar xzf chat-digest-2.0.0.tar.gz && cd chat-digest
+./scripts/install.sh                          # 只打印计划
+./scripts/install.sh --apply                  # .venv、依赖、分词数据、doctor --demo-only
+./bin/chat-digest demo --output /tmp/chat-digest-demo
+./bin/chat-digest demo --qq --output /tmp/qq-digest-demo
+./bin/chat-digest doctor --demo-only
+./bin/chat-digest init                        # 然后把 project.json 指向自带的合成导出和演示发送器
+./bin/chat-digest list-conversations --export-root examples/synthetic-export
+./bin/chat-digest check-export --export-root examples/synthetic-export check --conversation-id g_demo_garden
+./bin/chat-digest doctor --no-docker --probe-send
 ```
 
-核对无关 cron 行保留，第二次不重复添加任务；这些动作仅写临时根，不启动服务。真实 `/etc` 的安装只能由运维者明确指定 `--apply`，且先检查实际路径、数据权限和后台服务状态。
+| 镜像 | 架构 | Python | 结果 |
+|---|---|---|---|
+| debian:12（bookworm） | arm64 | 3.11.2 | 全部步骤通过 |
+| debian:12（bookworm） | amd64 | 3.11.2 | 全部步骤通过 |
+| ubuntu:24.04（24.04.5 LTS） | arm64 | 3.12.3 | 全部步骤通过 |
+| ubuntu:24.04（24.04.5 LTS） | amd64 | 3.12.3 | 全部步骤通过 |
 
-## 3. 解密与媒体
+每组的 doctor 输出：依赖、分词数据、字体、运行目录权限、配置、发送命令 dry run（`dry run: target and input are valid, nothing submitted`）都是 `[ OK ]`，结论 `all required checks passed`；预期内的警告有三条：自带样本目录权限是 775、样本里最后一条消息是很多天前、没有配置模型（离线 demo 不需要）。demo 生成了简报和回顾两版 HTML/PNG，演示发送器写入了 1 张 PNG，并对同一个 `request_id` 正确返回了幂等重放结果。
 
-按 [DATABASE](DATABASE.md) 生成的公知测试库执行认证解密，查询 `synthetic_messages` 行。使用错误 key 或翻转加密体字节时必须失败且不破坏已有有效输出。WAL 测试覆盖提交/未提交/损坏帧以及最后一次提交导致文件缩小的边界。原库字节哈希应始终不变。
+## 3. 运行时镜像
 
-## 4. 真实渲染烟测
+| 平台 | 结果 |
+|---|---|
+| arm64（原生） | `docker build` 成功；`docker run --network none --read-only --cap-drop ALL … /tool/digest.py --help` 正常；同样的隔离参数下，只读挂载合成导出运行 `prepare-images.py`，输出 `{"image_messages": 1, "ready_images": 1, "pending": 0, "missing": 0}` |
+| amd64（模拟） | `docker build --platform linux/amd64` 成功；同样的隔离参数下 `/tool/digest.py --help` 正常 |
 
-```sh
-python scripts/generate-demo.py --output /tmp/wechat-digest-demo
-```
+## 4. 隐私与许可证检查
 
-查看 HTML/PNG，不以“文件非空”代替布局验证。核对中文可读、统计范围、十分钟空桶、引用作者与原文、灰框缩略图及原图链接、简报/回顾差异、正文汉字数排除来源/目录/排行。手机宽度检查真实元素尺寸与页面是否溢出。
+- gitleaks v8.30.1：扫描 v1.2.4 之后的全部新提交和当前工作树。唯一命中是 `scripts/doctor.py` 里 tiktoken 分词数据文件的公开 SHA-256 校验值，属于误报，已在 `.gitleaks.toml` 精确放行（只放行这一个值、这一个文件）。
+- 关键字扫描（账号 ID 前缀、内网和 Tailscale 网段、个人域名、人设名、私有路径等）：清理了一处网站反代示例里的私人站点路径和一段残留的数据库测试夹具；剩下的命中都是测试里虚构的 `…@chatroom` 编号和“拒绝私网地址”测试用的合成地址。
+- 私人名单（真名、群名等，名单只保存在私有机器上）扫描：0 命中。
 
-## 5. 隐私审计
+## 5. 没有验证的
 
-```sh
-python scripts/audit-release.py
-```
-
-检查器只输出文件路径、行号和类别，不回显匹配值。额外私有否定清单必须放在仓库外：
-
-```sh
-python scripts/audit-release.py --private-patterns /path/outside/repository/private-patterns.json
-```
-
-该 JSON 是“类别 → 正则表达式”。用于检查你自己的旧域名、昵称、绝对家目录等，不要为了写一个否定规则把真实私密值再提交进公开检查脚本。加密测试库只有精确的合成 fixture 路径获准；真实数据库、登录态、私钥、抓包和运行目录不可进入 Git 索引。
-
-还必须使用一个成熟的密钥扫描器，例如已验证来源的 Gitleaks，并启用脱敏：
-
-```sh
-gitleaks dir . --redact --no-banner
-gitleaks git . --redact --no-banner
-```
-
-测试向量命中应逐项确认并作最窄的规则例外；不能对整个 `examples/` 或整个测试树关闭密钥检查。检查器不能证明图片没有私人内容，因此仅收录从零生成、可复现的合成资产，拒绝原聊天截图。
-
-## 6. 历史与发布后复验
-
-只推经过审计的分支。若旧历史包含个人资料或无许可源，将其留在私有备份，创建干净公开历史；不要 `git push --all` 或上传旧缓存包。公开后在新的临时目录 clone，重跑测试/文档检查/合成生成，检查 GitHub 可见性、默认分支、许可证识别、文件树和 README 链接。记录实际验证平台及哪些客户端捕获路径尚未做真机授权验证。
-
-## 7. 首次公开发行的实际验证范围
-
-- macOS arm64：执行离线回归、27 个 CLI 帮助入口、本地文档链接/JSON 检查、安装器语法和 dry-run。
-- Linux arm64 Docker：实际构建工具镜像；在 UID 1000、断网、只读根、移除 capabilities 的容器中认证解密公知样本，查询到两行 `synthetic_messages`，核实原文件 SHA256 不变并实际渲染 PNG。
-- Chromium：打开生成的 HTML，展开来源，核实合成图加载、回复灰框、UTC 时间和峰值；桌面与 390px 窄屏无横向溢出。另直接查看完整中文 PNG 与计数/时间刻度。
-- 发布前使用外置私有否定清单和脱敏 Gitleaks 检查公开文件；公开历史从本发行目录重新创建，不带此前私有运行树。
-
-这些证据不等同于重新登录任何真实微信、调用付费模型或真实投递。此次公开包未重新做 Windows/macOS 密钥捕获真机测试，也未把 Linux arm64 工具镜像烟测写成微信桌面镜像支持 ARM 的保证。客户端版本与权限边界仍以数据库和部署手册为准。
-
-## 8. 1.1.0 QQ 与隔离验收
-
-- 本地公开工程全套回归覆盖 QQ 协议/历史游标、空窗口、七天边界、逐版回执、并发实例锁、只读状态、HTTP/Unix socket 权限以及微信既有流程；平台专用的三项 Linux GDB 隔离捕获测试仍需显式环境，不能将其跳过说成已做真机捕获。
-- 已在一个获授权 QQ 群完成真实过去24小时生成与两版图片投递：278 条可读消息、52 张图片，OneBot 回执按群号/发送者/get_msg 验证。真实记录、群身份、密码、报告截图和回执不作为公开样例。
-- 新网站真实 HTTPS 验证了新账号只见对应 QQ 群、旧账号仍见原网站、未登录拒绝、双向跨群路径拒绝；桌面及390px真实浏览器检查了正文、来源图和导航。账号密码只保存在站点私有配置中，不复用、不进入发布包。
-- `scripts/generate-demo.py --qq` 提供完全虚构的离线展示烟测。CI 另构建带校验OCR层的 Linux x86-64/Python3.12 工具镜像，并执行实际数字OCR识别；以该提交的 GitHub Actions 结果为准，不把纯文本CLI帮助当成OCR验证。
-
-## 9. 1.1.1 固定产物恢复验收
-
-- 使用两个独立 Python 进程、真实 SQLite 持久目录及实际渲染的双版 PNG 实跑恢复：第一进程在简报确认后模拟回顾提交前故障；第二进程添加迟到记录后，只续发原回顾，不调用生成器。两版 PNG 与源快照 SHA-256 不变。
-- 上述烟测使用明确隔离的本地传输记录器，不连接 OneBot、不调用付费模型、不向真实群再发测试消息；它验证跨进程产物恢复，不冒充真实 QQ 投递证据。
-- 回归覆盖已确认双版不依赖产物缓存、损坏产物停止、旧版未知提交没有固定产物时停止，以及同窗口不同任务的独立文件名。真实群首次投递及权限隔离证据仍见上一节。
-- 本地最终回归：296 项通过、93 个子测试通过；3 项需显式 Linux GDB 环境的测试跳过。文档检查覆盖 33 个 CLI 帮助入口且无错误；发布审计与脱敏完整历史凭据扫描无发现。
-
-## 10. 1.2.0 token ranking, quotes and delivery validation
-
-- Public local checks: 316 tests passed, 12 skipped, and 97 subtests passed. The 12 skips are 3 Linux GDB capture integrations requiring `WECHAT_CAPTURE_INTEGRATION=1` and 9 native X11 window cases unavailable on macOS; all 9 X11 cases separately passed in an isolated NAS runtime with Xvfb, nonroot execution, network disabled, read-only filesystem and no real GUI/account mounts. The public suite also passed as reported by the parent maintainer; this document records that evidence, not an independent rerun.
-- Four affected private regression paths passed (82 tests, 20 subtests). These are private verification results and do not imply private source/data is included in this release.
-- `scripts/check-docs.py --cli` reported zero errors across 33 CLI help entries; `docker compose config --quiet` succeeded. Synthetic WeChat and QQ CLI generation produced HTML and PNG output. The OCR-enabled public Docker image built successfully using an existing build network without changing host networking; isolated runtime checks confirmed the default 1.2.0 image label, offline cache use and OCR recognition of synthetic digits. The final brief-source overlay image used Python 3.12.16, distinct from the fixed production image.
-- A separate fixed production image/Python 3.12.3 cold-start check used pinned `tiktoken==0.14.0` data and a read-only cache as a nonroot process with network disabled: `你好，世界！` counted as 4 tokens and the literal image caption `[图片]` as 3, while image statistics remained unchanged. Production dependencies, model, WeChat and NapCat images were not upgraded; 15 other production containers retained their baseline image and start time.
-- In an authorized QQ group, the daily 24-hour digest covered 479 messages, 19 members and 108 original images; all 108 images were understood. Both editions were sent once, with independent `get_msg` verification of recipient group, sender and single-image payload. An independent literal-text recount matched all 19 speakers; the top count was 565. The HTML and PNG displayed no tokenizer explanation. Public documentation omits group/account/message identifiers, credentials, private URLs and report artifacts.
-- After service restart and at least two collector/scheduler cycles, the task, receipts, prepared manifest and PNG/HTML/JSON fingerprints and modification times remained unchanged; no regeneration or resend occurred. Isolated SQLite schedule checks verified pre-boundary/at-boundary behavior, duplicate ticks, store reopen and exact 86400-second windows with one task and two receipts. The fixed WeChat wrapper `--list-groups` returned 0 without model access.
-- Brief reports now independently choose source-verified quote candidates; review prompt semantics remain unchanged. Original quote text is validated and restored verbatim, empty candidate sets do not invent quotes, and brief HTML/PNG append literal quotes and available activity/token ranking. Visible quotes are included in Han-character counts while ranking labels are not. A production-image preview using verified data showed two literal quotes, 19 members and the top count 565 without clipping; already-sent images were left untouched. Synthetic demos also show exact-source quotes rather than fabricated composite quotations.
-- The authorized private site entry and notification usage example were verified in the intended group, including HTTPS response and content/account checks. This public record intentionally excludes the URL, user-info, account, password, group ID and message ID.
-- The successful production task state was `complete`. A separate observation script incorrectly expected `done`; that caused a reporting delay only and was not a production processing or delivery failure.
-- Final source privacy audit with the external private-pattern list reported zero findings. Redacted Gitleaks 8.30.1 directory and full-history scans each reported zero findings. No private patterns, matching values, runtime caches or production artifacts are included in the public tree.
-- The two v1.2.0 push workflow runs ended in failure with no job/check-run records; GitHub did not provide logs (404). Root cause was invalid context use: GitHub documents `runner` as unavailable in `jobs.<job_id>.env`, although it is available in step environments. This workflow-scope defect is corrected in v1.2.1; the v1.2.0 tag/assets remain unchanged and v1.2.1 supersedes that release for use.
-
-## 11. 1.2.1 GitHub Actions workflow correction
-
-- The public workflow now initializes the tokenizer cache in a step environment, exports its path through `GITHUB_ENV`, and uses it from later steps without job-level `runner` context. Official `actionlint` v1.7.12 completed with exit 0; its independently downloaded binary matched the official release metadata SHA-256.
-- The extracted prewarm step completed with exit 0; a separate fresh Python process inherited the exported cache path and deterministically counted the sample as 4 tokens. Public version-template contract checks also matched 1.2.1.
-- GitHub Actions run `41845207440` for source commit `f936074f57a573ea0f3bd48057ea4d107eb90e4e` completed successfully: Python 3.11 and 3.12 matrix jobs passed, including offline tests, documentation, redacted boundary audit, synthetic rendering, Compose/installer checks, and the Python 3.12 isolated runtime/OCR check. Release-tag CI is checked separately after publication; this is not inferred from local checks.
-
-
-## 12. 1.2.2 Safari and shared-domain QQ authentication
-
-- QQ site GET/HEAD unauthorized responses now provide an HTML body and explicit `Content-Type`/`Content-Length` for GET, no body for HEAD, and retain the HTTP Basic `WWW-Authenticate` challenge. Site target suites in both public/private trees passed 9 tests and 8 subtests each (parent-reported).
-- Origin-side TLS checks with certificate verification enabled confirmed the isolation matrix: the legacy WeChat identity at `/` received 200; that identity at `/qq/*` received 401 HTML with the QQ realm; the authorized QQ identity at `/qq/*` received 200; unauthenticated `/qq/*` received 401 HTML with a Basic challenge. No domain, account, group identifier or credential is included here.
-- The shared-domain rule gives fixed `/qq/*` paths precedence over username-based legacy routing and sends them to the QQ-specific authenticator. The old WeChat root/route and independent group authorization remain in place. Safari may reuse prior Basic credentials and show its native login prompt; automatic URL user-info authentication is not portable or guaranteed.
-- Native Safari verification completed: the original clean entry URL loaded the QQ landing page after the QQ-specific native Basic prompt, and opening its brief link displayed the verified 479-message report, message rhythm and topic sections. No saved password or Safari security setting change was used. No private URL, report image, account, credential, group ID or message ID is included.
-- Caddy configuration validation and isolated Basic-challenge/HTML checks passed. The verified Origin TLS matrix and Safari page/report checks used certificate verification; the controlled reload did not restart the proxy or change other virtual hosts. No production software was upgraded.
-
-## 13. 1.2.3 automatic QQ site-access notice
-
-- Public local regression: 328 passed and 12 skipped. The independent private QQ-service/site-notice and WeChat-notice regression group passed 39 tests; the notice-focused target suites in both public/private trees each passed 10 tests. Parent reported these results; aggregate subtests are not claimed.
-- The actual scheduled QQ worker sent the separate four-line site-access/use notice only after both report editions had confirmed `sent`. Independent `get_msg` verification confirmed recipient group, sender, complete notice content and content fingerprint. The report editions remained at one send attempt each; the notice receipt also reached `sent` at attempt 1.
-- After a real service-container restart and two worker polling cycles, the notice receipt content, modification time and attempt count were unchanged; exactly one notice record remained. Historical image receipts and both report artifacts/fingerprints/timestamps were unchanged. No model call, report regeneration or image resend occurred.
-- Notice credentials were supplied by a separate single-group `site_access_file`, mode `0600` and readable by the worker UID. Its enable boundary covered only the current daily window. Real URL, credentials, group/account identifiers, message IDs and private report artifacts are intentionally omitted.
-
-## 14. 1.2.4 on-demand safety boundary
-
-- Public regression: 334 passed, 12 skipped; the private QQ-service and notice regression group passed 39 tests (parent-reported). Synthetic request-duration/cancellation cases cover default-vs-explicit duration, complete fenced JSON vs. truncated output, notice eligibility, and terminal cancellation.
-- A parser-only probe with synthetic request content returned 10,800 seconds and preserved the supplied trigger end timestamp; it did not enqueue a task, generate reports, or send a message.
-- Production read-only verification confirmed the pre-existing on-demand report pair was already delivered for a 24-hour window. It is not evidence that a corrected 3-hour report was sent. The user explicitly prohibited repeat sends, so no corrected report or request-site notice was generated or delivered.
-- The dedicated request notice record remains `cancelled` with zero attempts after service restart and multiple worker polls. No new task/notice/image send was created. Existing task fields, image receipts, generated HTML/JSON/PNG fingerprints and modification times stayed unchanged.
-- The on-demand notice sending path is verified only with synthetic tests; the production run verifies cancellation/no-reopen and zero additional delivery, not a successful request notice. Real user text, group/account identifiers, message IDs, credentials, URLs and private artifacts are omitted.
+- 带真实模型的完整生成流程（容器内各阶段串起来调真实模型）。
+- 与真实导出工具、真实 `wechat-send` 的联调。
+- systemd、procd 服务在真实系统上的启用和长期运行。
+- OCR 层（`WITH_OCR=1`）。

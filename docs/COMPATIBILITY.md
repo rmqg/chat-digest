@@ -7,7 +7,7 @@
 | 项目 | 实测通过 | 未测试 / 不保证 |
 |---|---|---|
 | 发行版 | Debian 12（bookworm）、Ubuntu 24.04 LTS：全新官方容器里按 [INSTALL.md](INSTALL.md) 安装、跑 demo 和 doctor；Ubuntu 22.04.5 LTS：全量单元测试 | 其他发行版；OpenWrt / iStoreOS 上 v2 还没有实机运行（v1 曾在 iStoreOS 24.10 上生产运行，v2 的宿主脚本只用标准库，procd 服务文件已提供） |
-| 内核 | KERNEL_PLACEHOLDER（OrbStack 虚拟机，容器实测）；6.8.0-59-generic x86-64（单元测试） | 其他内核 |
+| 内核 | 7.0.14-orbstack（OrbStack 虚拟机，容器实测）；6.8.0-59-generic x86-64（单元测试） | 其他内核 |
 | CPU 架构 | arm64（aarch64）、x86-64（amd64） | 32 位 ARM、其他架构 |
 | Python | 3.11.2（Debian 12 自带）、3.12.3（Ubuntu 24.04 自带）、3.11.18 与 3.12.16（全量单元测试） | 3.13（CI 矩阵里有，本地未实测）；3.10 及以下不支持 |
 
@@ -16,7 +16,7 @@
 | 项目 | 实测通过 | 未测试 / 不保证 |
 |---|---|---|
 | Docker | 29.4.0（OrbStack，macOS arm64 主机） | Docker 24 以下、Podman、rootless Docker |
-| 运行时镜像 `chat-digest-runtime:2.0.0`（基于 `python:3.12-slim`） | arm64 原生构建；在 `--network none --read-only --cap-drop ALL` 的容器里读只读挂载的合成导出，取图阶段输出 1 张就绪原图；IMAGE_AMD64_PLACEHOLDER | 带模型的完整阶段链在容器里端到端运行（用真实或替身模型）；OCR 层 `WITH_OCR=1`（锁定的 wheel 只适用于 x86-64、Python 3.12，v1 在 CI 里验证过，v2 未重新实测） |
+| 运行时镜像 `chat-digest-runtime:2.0.0`（基于 `python:3.12-slim`） | arm64 原生构建；在 `--network none --read-only --cap-drop ALL` 的容器里读只读挂载的合成导出，取图阶段输出 1 张就绪原图；amd64（模拟）构建成功并在同样隔离参数下启动 | 带模型的完整阶段链在容器里端到端运行（用真实或替身模型）；OCR 层 `WITH_OCR=1`（锁定的 wheel 只适用于 x86-64、Python 3.12，v1 在 CI 里验证过，v2 未重新实测） |
 
 ## 上下游
 

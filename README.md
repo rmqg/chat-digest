@@ -29,7 +29,7 @@
 | 宿主系统 | Debian 12、Ubuntu 24.04 的全新容器（安装、demo、doctor） | 其他发行版；OpenWrt/iStoreOS 上 v2 尚未实机运行 |
 | CPU 架构 | arm64、x86-64 | 其他 |
 | Python | 3.11.2（Debian 12）、3.12.3（Ubuntu 24.04）、3.12.16（单元测试） | 3.13 只在 CI 配置里，未在本地实测；3.10 及以下不支持 |
-| Docker | 29.4.0（OrbStack，arm64）上构建运行时镜像并跑通断网取图阶段 | x86-64 上构建镜像；OCR 层（`WITH_OCR=1`）在 v2 尚未重新实测 |
+| Docker | 29.4.0（OrbStack）：arm64 与 amd64 都能构建运行时镜像，arm64 上跑通断网取图阶段 | 带真实模型的完整容器流程；OCR 层（`WITH_OCR=1`）在 v2 尚未重新实测 |
 | 输入 | 合成的 chat-export/v1 目录 | 真实导出工具的输出与 v2 的联调 |
 | 发送 | 合成的 chat-send/v1 演示命令 | 真实的 `wechat-send` 与 v2 的联调 |
 
