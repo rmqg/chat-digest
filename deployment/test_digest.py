@@ -3,7 +3,6 @@ import json
 import unittest
 from pathlib import Path
 import hashlib
-import sqlite3
 import tempfile
 from unittest.mock import patch
 from report_metrics import body_token_count
@@ -32,18 +31,6 @@ class DigestConsumerRiskTests(unittest.TestCase):
                 self.assertEqual(report['leaders']['peak']['name'], '2026-10-27 17:00')
                 self.assertEqual(digest._parse_time('2026-10-27T17:00', 0), start)
 
-    def message_database(self, root, shard, times, types=None):
-        path = Path(root) / "message" / f"message_{shard}.db"
-        path.parent.mkdir(exist_ok=True)
-        table = "Msg_" + hashlib.md5(b"test@chatroom").hexdigest()
-        with sqlite3.connect(path) as conn:
-            conn.execute("CREATE TABLE Name2Id(user_name TEXT, is_session INTEGER)")
-            conn.execute("INSERT INTO Name2Id(rowid,user_name,is_session) VALUES(7,'wxid_test',0)")
-            conn.execute(f"CREATE TABLE [{table}](local_id INTEGER,server_id INTEGER,local_type INTEGER,real_sender_id INTEGER,create_time INTEGER,origin_source INTEGER,source TEXT,message_content TEXT,compress_content TEXT,packed_info_data BLOB,WCDB_CT_message_content INTEGER)")
-            for index, stamp in enumerate(times):
-                kind = types[index] if types else 1
-                conn.execute(f"INSERT INTO [{table}] VALUES(?,NULL,?,7,?,1,NULL,'hello',NULL,NULL,0)", (index + 1, kind, stamp))
-        return path
 
 
     def test_quotes_are_backfilled_from_cited_source(self):

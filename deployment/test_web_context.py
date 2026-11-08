@@ -27,7 +27,7 @@ class WebContextSafetyTests(unittest.TestCase):
     def test_dns_resolution_rejects_any_non_public_answer(self):
         with patch.object(socket, "getaddrinfo", return_value=[
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.10", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.20.30.40", 443)),
         ]):
             with self.assertRaises(web_context.UnsafeURL):
                 web_context._public_addresses("public.example", 443)
