@@ -99,7 +99,7 @@ sudo -u chat-digest ./bin/chat-digest prepare-only
 **systemd（Debian、Ubuntu 等）**
 
 ```sh
-sudo ./scripts/install.sh --apply --services systemd   # 只复制 unit 文件，不启用
+sudo ./scripts/install.sh --apply --services systemd --prefix /opt/chat-digest   # 只复制 unit 文件，不启用
 sudo systemctl daemon-reload
 sudo systemctl enable --now chat-digest-daily.timer      # 每分钟一次：到点生成，生成好就发送
 sudo systemctl enable --now chat-digest-images.service   # 白天预处理新图片和链接，出报时更快（可选）
@@ -110,7 +110,9 @@ sudo systemctl enable --now chat-digest-watchdog.timer   # Bark 投递监控（�
 **OpenWrt / iStoreOS（procd + cron）**
 
 ```sh
-./scripts/install.sh --apply --services procd     # 复制到 /etc/init.d，不启用
+# 宿主只需要 python3（标准库），重活都在运行时镜像里，所以不建 .venv；--prefix 写进服务文件
+./scripts/install.sh --apply --no-venv --services procd --prefix /opt/chat-digest   # 复制到 /etc/init.d，不启用
+./bin/chat-digest doctor --host-only
 /etc/init.d/chat-digest-images enable && /etc/init.d/chat-digest-images start
 /etc/init.d/chat-digest-commands enable && /etc/init.d/chat-digest-commands start
 ```

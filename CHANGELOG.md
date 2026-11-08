@@ -29,6 +29,8 @@
 
 **新增**
 
+- 对齐 chat-send/v1 最终版：`--dry-run` 的结果是独立的 `dry_run` 状态（退出码 0，不算发送）；忽略提供方私有的 `extra` 字段；导出媒体可带 `source_quality`（`original` / `client_full`）。
+- `install.sh --no-venv`（只用 Docker 的主机，例如 OpenWrt，宿主不装 Python 包）和 `--prefix`（写进服务文件的项目路径）；`doctor --host-only`。
 - `bin/chat-digest` 统一入口；`scripts/install.sh` 一条命令安装；`doctor` 自检并给出修法；离线 demo 改为从合成 chat-export 目录经真实生成流程出报告，并用演示发送器走一遍 chat-send/v1。
 - systemd unit 和 OpenWrt procd 服务；`scripts/build-release.sh` 构建可复现的发布包和 SHA256SUMS；release workflow 生成构建来源证明。
 - 全新的中文文档：安装、配置（逐个参数）、排障、架构、安全边界、兼容性、实测记录、迁移指南、接口约定。

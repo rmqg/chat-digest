@@ -159,7 +159,7 @@ def check_sender(project: dict, probe: bool) -> None:
         report("sender", "ok", f"command found: {executable} (use --probe-send for a dry run)")
         return
     result = chat_send.send(config, rid=chat_send.request_id("doctor", str(time.time())), text="chat-digest doctor dry run", dry_run=True)
-    if result["status"] in {"failed", "sent"} and result.get("returncode") in (0, 1):
+    if result["status"] == "dry_run":
         report("sender", "ok", f"dry run answered: {result.get('detail', result['status'])}")
     else:
         report("sender", "fail", f"dry run status {result['status']}: {result.get('reason') or result.get('detail')}",
@@ -187,13 +187,16 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", type=Path, help="project.json to check (default: runtime/project.json)")
     parser.add_argument("--demo-only", action="store_true", help="only check what the offline demo needs")
+    parser.add_argument("--host-only", action="store_true",
+                        help="Docker-only host: skip Python package and tokenizer checks (they live in the runtime image)")
     parser.add_argument("--no-docker", action="store_true", help="skip Docker checks")
     parser.add_argument("--probe-send", action="store_true", help="run the sender once with --dry-run (never submits)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args(argv)
     check_python()
-    check_packages()
-    check_tokenizer()
+    if not args.host_only:
+        check_packages()
+        check_tokenizer()
     check_fonts()
     if not args.demo_only:
         project = check_runtime(args.config)

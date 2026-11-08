@@ -1,8 +1,8 @@
 # 接口约定：chat-export/v1 与 chat-send/v1
 
-本文件由 `wechat-export-send`、`wecom-export`、`chat-digest` 三个仓库共用，三边 `docs/CONTRACT.md` 内容相同。要修改时三边同时改，并升 schema 版本。
+本文件由 `wechat-export-send` 和 `chat-digest` 共用，两边 `docs/CONTRACT.md` 内容相同。要修改时两边同时改，并升 schema 版本。其他导出工具只要产出同样的格式，也可以被消费方读取。
 
-## 1. chat-export/v1（导出格式，生产方：wechat-export-send、wecom-export；消费方：chat-digest）
+## 1. chat-export/v1（导出格式，生产方：wechat-export-send 或其他遵守本格式的导出工具；消费方：chat-digest）
 
 导出是一个目录，可以增量追加：
 
@@ -51,7 +51,7 @@
 | `reply_to` | object | 否 | `{"id": "<被引用消息 id，可缺>", "sender_name": "...", "text": "..."}` |
 | `forward` | array | 否 | 合并转发的条目，每项 `{"sender_name","ts","type","text"}` |
 | `link` | object | 否 | `{"url","title","description"}` |
-| `media` | array | 否 | 每项 `{"kind":"image|file|voice|video|sticker","path":"media/ab/<sha256>.jpg","sha256","mime","bytes","name","status":"ready|pending|missing","is_thumbnail":false}`；`path` 相对 export-root；没下载到原图时 `status` 写 `pending` 或 `missing`，**不得**拿缩略图冒充原图（是缩略图就写 `is_thumbnail: true`） |
+| `media` | array | 否 | 每项 `{"kind":"image|file|voice|video|sticker","path":"media/ab/<sha256>.jpg","sha256","mime","bytes","name","status":"ready|pending|missing","is_thumbnail":false,"source_quality":"original|client_full"}`；`path` 相对 export-root；没下载到原图时 `status` 写 `pending` 或 `missing`，**不得**拿缩略图冒充原图（是缩略图就写 `is_thumbnail: true`）。`source_quality` 可选：长度和 md5 都与消息记录对上写 `original`，否则写 `client_full` |
 | `mentions` | array | 否 | 被 @ 的 `sender_id` 列表；@所有人写 `"@all"` |
 | `raw_type` | string | 否 | 平台原始类型号，便于排查 |
 | `extra` | object | 否 | 生产方私有字段，消费方必须忽略不认识的字段 |
@@ -87,7 +87,7 @@ wechat-send --to <会话名或 conversation_id> (--text <文字> | --text-file <
 
 ```json
 {"schema": "chat-send/v1", "status": "sent", "request_id": "...", "to": "...",
- "conversation_id": "...", "submitted_at": 1794043483, "detail": "..."}
+ "conversation_id": "...", "submitted_at": 1794043483, "detail": "...", "extra": {}}
 ```
 
 | status | 退出码 | 含义 | 调用方该怎么做 |
@@ -96,5 +96,8 @@ wechat-send --to <会话名或 conversation_id> (--text <文字> | --text-file <
 | `failed` | 1 | 在提交**之前**失败（目标会话找不到、窗口不对、文件不合法等），确定没发出去 | 可以重试 |
 | `unknown` | 2 | 已经提交或可能已经提交，但没能确认 | **不许自动重试**，交给人工确认 |
 | `invalid` | 3 | 参数错误 | 修配置，不重试 |
+| `dry_run` | 0 | 只在 `--dry-run` 时出现：目标会话和输入都校验通过，没有提交 | 不算发送，按需再正式发送 |
+| `calibrated` | 0 | 只在 `--calibrate` 时出现：已选中会话并保存标题模板 | 不算发送 |
 
+- `extra` 是提供方私有字段，调用方必须忽略不认识的字段。
 - 提供方必须保证：凡是可能已经点了「发送」的情况，一律报 `unknown`，不报 `failed`。

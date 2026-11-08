@@ -22,7 +22,7 @@
 
 | 项目 | 实测通过 | 未测试 / 不保证 |
 |---|---|---|
-| 输入 chat-export/v1 | 仓库自带的合成导出；测试里现场生成的各种边界情况（去重、未写完的末行、坏行、越界路径、媒体哈希） | wechat-export-send 等真实导出工具的输出与 v2 联调；`wecom`、`qq` 等平台取值只按格式支持，未与具体导出工具联调 |
+| 输入 chat-export/v1 | 仓库自带的合成导出；测试里现场生成的各种边界情况（去重、未写完的末行、坏行、越界路径、媒体哈希） | wechat-export-send、wecom-export 等真实导出工具的输出与 v2 联调（微信主账号的生产切换记录见 VALIDATION.md 后续更新） |
 | 发送 chat-send/v1 | 合成的演示发送器 `scripts/demo-chat-send.py`；测试里模拟的四种状态、超时、输出不一致 | 真实的 `wechat-send` 与 v2 联调 |
 | 模型 | 本机回环的演示模型（OpenAI 兼容流式接口） | 具体厂商。任何支持 `/chat/completions`、流式输出和 `json_schema` 结构化输出的接口理论上可用；v1 在生产中用过 Gemini、Qwen 等 OpenAI 兼容端点，v2 的模型调用代码与生产版相同 |
 | QQ | 离线虚构样例渲染 | NapCat / OneBot v11 与 v2 的实机联调（这部分代码与 v1.2.4 基本相同，只合入了自然语言请求的 fallback） |

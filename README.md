@@ -6,7 +6,7 @@
 
 ## 它是什么
 
-- **读导出，不碰客户端**：输入是 [chat-export/v1](docs/CONTRACT.md) 目录（一种简单的 JSONL 聊天记录导出格式），由导出工具产出。微信用 wechat-export-send；格式里的企业微信、QQ 等平台取值也可以由其他兼容工具提供。chat-digest 只读这个目录。
+- **读导出，不碰客户端**：输入是 [chat-export/v1](docs/CONTRACT.md) 目录（一种简单的 JSONL 聊天记录导出格式），由导出工具产出。微信用 [wechat-export-send](https://github.com/rmqg/wechat-export-send)，企业微信用 [wecom-export](https://github.com/rmqg/wecom-export)，它们都产出这个格式；其他遵守格式的导出工具也可以。chat-digest 只读这个目录。
 - **发送走标准命令**：发送时调用你配置的 [chat-send/v1](docs/CONTRACT.md) 命令（例如 `wechat-send`），并严格区分“已送达 / 确定没发出 / 不确定”：不确定时**绝不自动重发**。
 - **QQ 直连**：QQ 群通过你自己的 OneBot v11 服务（如 NapCat）读取和发送，见 [QQ.md](docs/QQ.md)。
 - **多模态证据**：图片先由视觉模型描述（可选 OCR），链接抓取正文后摘要，这些都作为“辅助证据”标明来源，不冒充群友发言。

@@ -50,7 +50,7 @@ def request_id(*parts: str) -> str:
     return "cd-" + hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:40]
 
 
-def _classify(returncode: int, stdout: str, rid: str) -> dict:
+def _classify(returncode: int, stdout: str, rid: str, *, dry_run: bool = False) -> dict:
     parsed = None
     for line in reversed((stdout or "").splitlines()):
         line = line.strip()
@@ -64,6 +64,8 @@ def _classify(returncode: int, stdout: str, rid: str) -> dict:
             parsed = value
         break
     expected = EXIT_STATUS.get(returncode)
+    if dry_run and returncode == 0:
+        expected = "dry_run"  # validated, nothing submitted
     if parsed is None or parsed.get("schema") != SCHEMA:
         return {"status": "unknown", "request_id": rid, "reason": "sender output is not a chat-send/v1 object",
                 "returncode": returncode}
@@ -109,7 +111,7 @@ def send(config: dict, *, rid: str, text: str | None = None, text_file: Path | N
         # The command could not even be started, so nothing was submitted.
         return {"status": "failed", "request_id": rid, "reason": f"sender could not start: {type(exc).__name__}",
                 "before_submit": True}
-    result = _classify(completed.returncode, completed.stdout, rid)
+    result = _classify(completed.returncode, completed.stdout, rid, dry_run=dry_run)
     if result["status"] in {"failed", "invalid"}:
         result["before_submit"] = True
     if result["status"] != "sent":

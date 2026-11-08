@@ -30,7 +30,7 @@ v2.0.0 起，仓库里**不再包含**任何借用的源码文件。v1.x 里随�
 
 ## 只是对接、不包含的外部项目
 
-- 聊天记录来自任何能产出 [chat-export/v1](docs/CONTRACT.md) 目录的导出工具，例如 [rmqg/wechat-export-send](https://github.com/rmqg/wechat-export-send)（微信）。本仓库不包含它们的代码，只读它们的导出。格式里的 `wecom` 等平台取值，可以由其他兼容的导出工具提供。
+- 聊天记录来自任何能产出 [chat-export/v1](docs/CONTRACT.md) 目录的导出工具，例如 [rmqg/wechat-export-send](https://github.com/rmqg/wechat-export-send)（微信）和 [rmqg/wecom-export](https://github.com/rmqg/wecom-export)（企业微信）。本仓库不包含它们的代码，只读它们的导出；其他遵守格式的导出工具也可以。
 - 发送通过外部命令完成，命令需要实现 [chat-send/v1](docs/CONTRACT.md)，例如 wechat-export-send 提供的 `wechat-send`。
 - QQ 群总结对接你自己部署的 OneBot v11 实现（例如 NapCat），本仓库不包含它们。
 - 微信（WeChat）、企业微信、QQ 是腾讯的产品和商标；本项目与腾讯无关，使用官方客户端须遵守其条款。

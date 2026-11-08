@@ -56,6 +56,21 @@ class ChatSendContractTests(unittest.TestCase):
         wrong_id = lambda command, **kw: subprocess.CompletedProcess(command, 0, json.dumps({**good, "request_id": "cd-other00000"}), "")
         self.assertEqual(chat_send.send(fcs.CONFIG, rid="cd-0123456789", text="x", runner=wrong_id)["status"], "unknown")
 
+    def test_dry_run_is_its_own_status_and_never_counts_as_sent(self):
+        def answer(status):
+            return lambda command, **kw: fcs.result(command, status) if status != "dry_run" else subprocess.CompletedProcess(
+                command, 0, json.dumps({"schema": "chat-send/v1", "status": "dry_run", "request_id": fcs.argument(command, "--request-id"),
+                                        "extra": {"provider": "private"}}) + "\n", "")
+        calls = []
+        def run(command, **kw):
+            calls.append(command)
+            return answer("dry_run")(command)
+        result = chat_send.send(fcs.CONFIG, rid="cd-0123456789", text="x", dry_run=True, runner=run)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertIn("--dry-run", calls[0])
+        self.assertEqual(chat_send.send(fcs.CONFIG, rid="cd-0123456789", text="x", runner=answer("dry_run"))["status"], "unknown")
+        self.assertEqual(chat_send.send(fcs.CONFIG, rid="cd-0123456789", text="x", dry_run=True, runner=answer("sent"))["status"], "unknown")
+
     def test_timeout_is_unknown_and_a_missing_command_is_a_safe_failure(self):
         def timeout(command, **kw):
             raise subprocess.TimeoutExpired(command, 1)

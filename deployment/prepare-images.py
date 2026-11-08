@@ -153,7 +153,8 @@ def prepare(export_root, conversation_id, start, end, runtime_dir, *, pending_gr
                 if source_format is None:
                     raise ValueError("unsupported image format")
                 data, fmt, dimensions, model_path = cached_model_image(payload, source_format, output)
-                item.update(available=True, image_path=str(model_path), dimensions=list(dimensions), source_quality="original",
+                quality = media.get("source_quality") if media.get("source_quality") in {"original", "client_full"} else "original"
+                item.update(available=True, image_path=str(model_path), dimensions=list(dimensions), source_quality=quality,
                             sha256=hashlib.sha256(data).hexdigest(),
                             provenance={"source": "chat-export", "source_format": source_format, "source_bytes": len(payload),
                                         "source_sha256": media["sha256"], "converted_without_resizing": source_format == "heic"})

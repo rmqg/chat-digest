@@ -46,7 +46,7 @@ def main(argv=None):
     if source is not None and not source.is_file():
         return emit("failed", 1, request_id=rid, to=args.to, detail="input file does not exist")
     if args.dry_run:
-        return emit("failed", 1, request_id=rid, to=args.to, detail="dry run: target and input are valid, nothing submitted")
+        return emit("dry_run", 0, request_id=rid, to=args.to, detail="dry run: target and input are valid, nothing submitted")
     args.outbox.mkdir(parents=True, exist_ok=True)
     stored = None
     if source is not None:

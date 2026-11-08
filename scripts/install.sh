@@ -7,11 +7,14 @@ set -eu
 
 usage() {
     cat <<'USAGE'
-usage: install.sh [--apply] [--python PATH] [--services none|systemd|procd] [--root PATH]
+usage: install.sh [--apply] [--python PATH] [--services none|systemd|procd] [--root PATH] [--prefix PATH] [--no-venv]
   --apply      perform the steps (default: dry run)
   --python     Python 3.11+ interpreter for the virtualenv (default: python3)
   --services   also install service definitions (default: none). Never enables or starts them.
   --root       staging filesystem root for service files (default: /)
+  --prefix     where the project lives, written into service files (default: this directory)
+  --no-venv    skip .venv, pip and the tokenizer cache (Docker-only hosts such as OpenWrt: the host
+               scripts need only the Python standard library; the runtime image has everything else)
 USAGE
 }
 
@@ -19,6 +22,8 @@ MODE=dry-run
 PYTHON=python3
 SERVICES=none
 ROOT=/
+PREFIX=
+VENV_STEP=yes
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --apply) MODE=apply; shift ;;
@@ -26,6 +31,8 @@ while [ "$#" -gt 0 ]; do
         --python) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; PYTHON=$2; shift 2 ;;
         --services) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; SERVICES=$2; shift 2 ;;
         --root) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; ROOT=$2; shift 2 ;;
+        --prefix) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; PREFIX=$2; shift 2 ;;
+        --no-venv) VENV_STEP=no; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -34,6 +41,8 @@ case "$SERVICES" in none|systemd|procd) ;; *) printf 'unknown --services value: 
 case "$ROOT" in /*) ;; *) printf '%s\n' '--root must be absolute' >&2; exit 2 ;; esac
 
 PROJECT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+[ -n "$PREFIX" ] || PREFIX=$PROJECT
+case "$PREFIX" in /*) ;; *) printf '%s\n' '--prefix must be absolute' >&2; exit 2 ;; esac
 VENV=$PROJECT/.venv
 CACHE=$PROJECT/.cache/tiktoken
 
@@ -42,12 +51,14 @@ printf '  project:    %s\n' "$PROJECT"
 printf '  virtualenv: %s (python: %s)\n' "$VENV" "$PYTHON"
 printf '  packages:   %s\n' "$PROJECT/requirements.txt"
 printf '  tokenizer:  %s (downloaded once, then used offline)\n' "$CACHE"
-printf '  services:   %s\n' "$SERVICES"
+printf '  services:   %s (project path in service files: %s)\n' "$SERVICES" "$PREFIX"
+[ "$VENV_STEP" = yes ] || printf '  python env: skipped (--no-venv)\n'
 if [ "$MODE" != apply ]; then
     printf '%s\n' 'Dry run only. Re-run with --apply to perform these steps.'
     exit 0
 fi
 
+if [ "$VENV_STEP" = yes ]; then
 "$PYTHON" - <<'PY' || { printf '%s\n' 'Python 3.11 or newer is required (use --python /path/to/python3.11).' >&2; exit 1; }
 import sys
 raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
@@ -59,6 +70,7 @@ fi
 mkdir -p "$CACHE"
 TIKTOKEN_CACHE_DIR=$CACHE "$VENV/bin/python" -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 chmod -R a-w "$CACHE" 2>/dev/null || true
+fi
 chmod 755 "$PROJECT/bin/chat-digest"
 
 case "$SERVICES" in
@@ -68,20 +80,24 @@ case "$SERVICES" in
         for unit in "$PROJECT"/deployment/services/systemd/*; do
             dest=$target/$(basename "$unit")
             [ ! -L "$dest" ] || { printf 'refusing symlink destination: %s\n' "$dest" >&2; exit 1; }
-            install -m 0644 "$unit" "$dest"
+            sed "s|/opt/chat-digest|$PREFIX|g" "$unit" > "$dest.tmp" && chmod 0644 "$dest.tmp" && mv "$dest.tmp" "$dest"
         done
         printf '%s\n' "systemd units copied to $target (not enabled)." \
-            'They expect the project at /opt/chat-digest and a "chat-digest" user; see docs/INSTALL.md.' ;;
+            "They point at $PREFIX and expect a \"chat-digest\" user; see docs/INSTALL.md." ;;
     procd)
         target=${ROOT%/}/etc/init.d
         mkdir -p "$target"
         for service in "$PROJECT"/deployment/services/procd/*.initd; do
             dest=$target/$(basename "$service" .initd)
             [ ! -L "$dest" ] || { printf 'refusing symlink destination: %s\n' "$dest" >&2; exit 1; }
-            install -m 0755 "$service" "$dest"
+            sed "s|/opt/chat-digest|$PREFIX|g" "$service" > "$dest.tmp" && chmod 0755 "$dest.tmp" && mv "$dest.tmp" "$dest"
         done
         printf '%s\n' "procd services copied to $target (not enabled). Add the cron lines from docs/INSTALL.md." ;;
 esac
 
-"$PROJECT/bin/chat-digest" doctor --demo-only
-printf '%s\n' 'Installed. Try the offline demo:  ./bin/chat-digest demo --output ./chat-digest-demo'
+if [ "$VENV_STEP" = yes ]; then
+    "$PROJECT/bin/chat-digest" doctor --demo-only
+    printf '%s\n' 'Installed. Try the offline demo:  ./bin/chat-digest demo --output ./chat-digest-demo'
+else
+    printf '%s\n' 'Installed without a Python environment. Check the host with:  ./bin/chat-digest doctor --host-only'
+fi
