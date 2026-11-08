@@ -538,7 +538,8 @@ def process_job(path: Path) -> dict:
             if confirmation["status"] == "sent":
                 receipt = {"status": "sent", "edition": edition, "chat_id": CHAT_ID,
                            "send_request_id": rid, "png_sha256": item["png_sha256"],
-                           "sent_at": int(time.time()), "report_day": job["report_day"], "request_id": request_id}
+                           "sent_at": int(time.time()), "report_day": job["report_day"], "request_id": request_id,
+                           "confirmation": confirmation}  # carries the platform message ID for self-exclusion
                 _atomic_json(receipt_path, receipt)
                 item.update(status="sent", send_request_id=rid, sent_at=receipt["sent_at"])
                 job.update(status="prepared", updated_at=int(time.time()))

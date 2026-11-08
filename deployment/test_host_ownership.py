@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,31 @@ class HostOwnershipTests(unittest.TestCase):
             target = Path(temp) / "job" / "result.json"
             image_pipeline._private_json(target, {"ok": True})
         self.assertIn(((Path(temp) / "job"), 1200, 1201), [call.args for call in chown.call_args_list])
+
+
+class DeliveredFingerprintTests(unittest.TestCase):
+    """Reports this project sent must be recognised in the export by message ID, because the chat client
+    re-encodes the PNG and its exported SHA-256 differs from the one we sent."""
+
+    def test_message_ids_come_from_v1_server_id_and_chat_send_confirmation(self):
+        project = {"group": {"conversation_id": "g_new", "aliases": ["v1@chatroom"]}}
+        with tempfile.TemporaryDirectory() as temp, patch.object(image_pipeline, "WORK", Path(temp)):
+            receipts = Path(temp) / "sent-receipts"
+            receipts.mkdir()
+            (receipts / "a.json").write_text(json.dumps({"status": "sent", "chat_id": "v1@chatroom",
+                                                         "server_id": 1111, "png_sha256": "a" * 64}))
+            (receipts / "b.json").write_text(json.dumps({"status": "sent", "chat_id": "g_new", "png_sha256": "b" * 64,
+                "confirmation": {"status": "sent", "extra": {"receipt": {"server_id": "2222", "local_id": 7}}}}))
+            (receipts / "c.json").write_text(json.dumps({"status": "unknown", "chat_id": "g_new", "server_id": "3333"}))
+            (receipts / "d.json").write_text(json.dumps({"status": "sent", "chat_id": "other", "server_id": "4444"}))
+            result = image_pipeline.delivered_fingerprints(project)
+        self.assertEqual(result["message_ids"], ["1111", "2222"])
+        self.assertEqual(result["images"], ["a" * 64, "b" * 64])
+
+    def test_unexpected_confirmation_shapes_are_ignored(self):
+        for receipt in ({"confirmation": "sent"}, {"confirmation": {"extra": "x"}},
+                        {"confirmation": {"extra": {"receipt": "1"}}}, {}):
+            self.assertEqual(image_pipeline._receipt_message_ids(receipt), [])
 
 
 if __name__ == "__main__":

@@ -191,6 +191,20 @@ def process_window(start: int, end: int, *, max_images: int = 0, wait_for_lock: 
         return _process_locked(start, end, max_images, scope)
 
 
+def _receipt_message_ids(receipt: dict) -> list[str]:
+    """Platform message IDs of a confirmed send. Image fingerprints alone are not enough: the chat client
+    re-encodes a sent PNG, so the exported copy has another SHA-256. Sources, in order: an explicit
+    message_id; a v1.x receipt's server_id; the chat-send/v1 result kept as `confirmation`, whose
+    provider-specific extra.receipt.server_id (wechat-send) is the exported message ID."""
+    ids = [str(receipt[key]) for key in ('message_id', 'server_id') if receipt.get(key)]
+    confirmation = receipt.get('confirmation')
+    extra = confirmation.get('extra') if isinstance(confirmation, dict) else None
+    platform = extra.get('receipt') if isinstance(extra, dict) else None
+    if isinstance(platform, dict) and platform.get('server_id'):
+        ids.append(str(platform['server_id']))
+    return ids
+
+
 def delivered_fingerprints(project: dict) -> dict:
     """Fingerprints of what this project already sent into the conversation, so reports exclude themselves."""
     images, texts, message_ids = [], [], []
@@ -208,8 +222,7 @@ def delivered_fingerprints(project: dict) -> dict:
             if receipt.get('status') == 'sent':
                 if receipt.get('png_sha256'):
                     images.append(receipt['png_sha256'])
-                if receipt.get('message_id'):
-                    message_ids.append(str(receipt['message_id']))
+                message_ids.extend(_receipt_message_ids(receipt))
     return {'images': sorted(set(images)), 'texts': sorted(set(texts)), 'message_ids': sorted(set(message_ids))}
 
 

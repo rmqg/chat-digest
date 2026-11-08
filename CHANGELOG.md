@@ -8,6 +8,7 @@
 - 运行时镜像加装 `libraqm0`：Pillow 用复杂文字排版画中文，标点和字距与带 raqm 的系统一致。
 - 外部渲染器加载时先登记模块，渲染器里用 `dataclass` 也能正常导入。
 - 调度脚本以 root 运行时（OpenWrt cron），新建的图片任务目录交给 `worker_uid`，阶段容器才能写入。`init` 改用 `project.json` 里的 `worker_uid`。
+- 自发报告排除：除图片指纹外，按消息 ID 排除（v1 回执的 `server_id`，以及 chat-send 结果里 `extra.receipt.server_id`）。聊天客户端会重新编码发出的 PNG，导出里的图片指纹和发出时不同，只靠指纹认不出自己的报告。
 - 迁移：`daily-job` 和网站入口说明把 `group.aliases` 下的回执（例如 v1 留下的当天回执）当作同一个会话的，切换当天不会报回执无效，也不会重发报告或说明。
 
 破坏性更新：仓库由 `rmqg/wechat-digest` 改名为 `rmqg/chat-digest`，只负责总结和出报告。升级步骤见 [docs/MIGRATION-v2.md](docs/MIGRATION-v2.md)。
