@@ -166,6 +166,31 @@ def check_sender(project: dict, probe: bool) -> None:
                "run the sender command by hand with --dry-run --json; see docs/TROUBLESHOOTING.md")
 
 
+def check_render(project: dict, import_module: bool) -> None:
+    import render_plugin
+    try:
+        config = render_plugin.normalize(project.get("render"))
+    except ValueError as exc:
+        report("renderer", "fail", str(exc), "fix the render object in project.json (docs/CONFIGURATION.md)")
+        return
+    if config is None:
+        report("renderer", "ok", "bundled renderer")
+        return
+    path = Path(str(config["module"])).expanduser()
+    if not path.is_absolute() or not path.is_file():
+        report("renderer", "fail", f"render.module not found: {path}", "use the absolute host path of the renderer .py file")
+        return
+    if not import_module:
+        report("renderer", "ok", f"external renderer file present: {path} (imported inside the runtime container)")
+        return
+    try:
+        import daily_report
+        render_plugin.load(project.get("render"), daily_report)
+        report("renderer", "ok", f"external renderer loaded: {path}")
+    except ValueError as exc:
+        report("renderer", "fail", str(exc), "check render.module, render.function and render.html_function")
+
+
 def check_docker(project: dict) -> None:
     if shutil.which("docker") is None:
         report("docker", "warn", "docker not found; scheduled processing needs it", "install Docker Engine 24+ (see docs/INSTALL.md)")
@@ -204,6 +229,7 @@ def main(argv=None) -> int:
             check_export(project)
             check_model()
             check_sender(project, args.probe_send)
+            check_render(project, import_module=not args.host_only)
             if not args.no_docker:
                 check_docker(project)
     failed = [item for item in RESULTS if item["status"] == "fail"]

@@ -62,6 +62,7 @@ docker build -t chat-digest-runtime:2.0.0 . && ./bin/chat-digest pin-images
 - [配置](docs/CONFIGURATION.md)：每个参数的含义、类型、默认值、示例和什么时候改
 - [排障](docs/TROUBLESHOOTING.md)：按症状给命令
 - [架构](docs/ARCHITECTURE.md)：数据流、阶段、状态文件
+- [报告 JSON 格式](docs/REPORT-JSON.md)：报告字典的字段，换用自己的渲染器时看
 - [安全边界](docs/SECURITY.md)：读什么、写什么、要什么权限、风险
 - [兼容性](docs/COMPATIBILITY.md) 与 [实测记录](docs/VALIDATION.md)
 - [接口约定 chat-export/v1 与 chat-send/v1](docs/CONTRACT.md)

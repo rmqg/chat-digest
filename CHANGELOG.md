@@ -2,6 +2,10 @@
 
 ## 2.0.0
 
+**可选的外部渲染器（生产替换时补充）**
+
+- 新增 `render` 配置（微信写在 `runtime/project.json`，QQ 写在服务配置）：`render.module` 指向宿主上的渲染器 `.py` 文件，`render.function` 画 PNG，可选的 `render.html_function` 画单期 HTML；不配置时照旧用自带渲染器。渲染器在调用模型之前加载，写错立刻失败；`doctor` 和 QQ `--check-config` 会检查。微信日报把渲染器目录只读挂到容器的 `/render`。新增 [docs/REPORT-JSON.md](docs/REPORT-JSON.md) 说明报告字典的格式。
+
 破坏性更新：仓库由 `rmqg/wechat-digest` 改名为 `rmqg/chat-digest`，只负责总结和出报告。升级步骤见 [docs/MIGRATION-v2.md](docs/MIGRATION-v2.md)。
 
 **拆分**

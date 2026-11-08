@@ -61,6 +61,8 @@ def load_project(required: bool = False, root: Path | str = ROOT) -> dict[str, A
     config["bot"] = config.get("bot", {})
     config["images"] = {**DEFAULTS["images"], **config.get("images", {})}
     config["export"] = {**DEFAULTS["export"], **config.get("export", {})}
+    import render_plugin  # validates the optional "render" object (external renderer)
+    render_plugin.normalize(config.get("render"))
     if "id" in config["group"] and "conversation_id" not in config["group"]:
         raise ValueError("group.id is a v1 WeChat field; v2 reads chat-export/v1 and needs group.conversation_id "
                          "(see docs/MIGRATION-v2.md)")

@@ -25,6 +25,7 @@ sys.path.insert(0, str(DEPLOYMENT))
 
 import qq_onebot
 import qq_site_access_notice
+import render_plugin
 from qq_onebot import DeliveryUnknownError, QQClient
 from structured import parse_object
 
@@ -84,6 +85,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ConfigurationError("enabled_from must be an epoch timestamp")
     if not isinstance(data["model_config"], str) or not data["model_config"].strip():
         raise ConfigurationError("model_config must be a non-empty path")
+    try:
+        render_plugin.normalize(data.get("render"))
+    except render_plugin.RenderConfigError as exc:
+        raise ConfigurationError(str(exc)) from exc
     daily_hour = data.get("daily_hour", 5)
     if type(daily_hour) is not int or not 0 <= daily_hour <= 23:
         raise ConfigurationError("daily_hour must be an integer from 0 to 23")
@@ -678,6 +683,7 @@ class QQService:
                    "--start", str(args["start"]), "--end", str(args["end"])]
         if self.fallback_config:
             command.extend(("--fallback-config", str(self.fallback_config)))
+        command.extend(render_plugin.cli_args(self.config.get("render")))
         task_id = str(args["task_id"]) if args.get("task_id") else uuid.uuid4().hex
         if args.get("task_id"):
             command.extend(("--request-id", task_id))
@@ -1024,7 +1030,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         if args.check_config:
-            print(json.dumps({"ok": True, "group_id": config["group_id"],
+            renderer = "builtin"
+            if render_plugin.normalize(config.get("render")):
+                sys.path.insert(0, str(DEPLOYMENT.parent / "agent_console"))
+                import daily_report
+                renderer = render_plugin.load(config["render"], daily_report).source
+            print(json.dumps({"ok": True, "renderer": renderer, "group_id": config["group_id"],
                               "group_name": config["group_name"],
                               "expected_self_id": config["expected_self_id"],
                               "daily_hour": config["daily_hour"]}, ensure_ascii=False))

@@ -42,6 +42,29 @@ chat-digest 的配置全部是 `runtime/` 下的 JSON 文件和少量环境变�
 
 v1.x 的 `group.id`、`bot.username`、`desktop_container`、`images.desktop`、`images.keyscan` 在 v2 里已经没有了。配置里还留着 `group.id` 而没有 `group.conversation_id` 时，程序会直接报错并指向 [迁移指南](MIGRATION-v2.md)，不会猜。
 
+## 外部渲染器（`render`）
+
+报告的 PNG（发到群里的那张图）默认由仓库自带的渲染器画（`agent_console/daily_report.py`）。想换成自己的样式时，可以写一个 Python 文件放在宿主上，用 `render` 指过去，不用改仓库代码。微信日报写在 `runtime/project.json`，QQ 写在每个群的服务配置里（见 [QQ.md](QQ.md)），两边格式相同：
+
+```json
+"render": {"module": "/srv/chat-digest-renderer/renderer.py", "function": "render_png_pillow", "html_function": "render_html"}
+```
+
+| 参数 | 类型 | 默认值 | 含义 | 示例 | 什么时候改 |
+|---|---|---|---|---|---|
+| `render` | 对象 | 不写 | 不写、写 `{}` 或 `module` 为空，都用自带渲染器 | 见上 | 想换报告样式时 |
+| `render.module` | 字符串（绝对路径） | 无 | 渲染器 `.py` 文件在**宿主**上的路径。微信日报在容器里生成，`run-digest.py` 会把这个文件所在的目录只读挂到容器的 `/render`；QQ 服务本身在容器里时，这里写容器内的路径，并自己把目录挂进去 | `"/srv/chat-digest-renderer/renderer.py"` | 渲染器换位置时 |
+| `render.function` | 字符串（函数名） | `"render_png_pillow"` | 画 PNG 的函数，调用方式是 `函数(report, output_path)`：`report` 是报告字典（格式见 [REPORT-JSON.md](REPORT-JSON.md)），`output_path` 是要写的 PNG 路径（`pathlib.Path`）。函数必须把 PNG 写到这个路径 | `"draw_png"` | 函数名不同时 |
+| `render.html_function` | 字符串（函数名） | 不写 | 画单期 HTML 的函数，调用方式是 `函数(report)`，返回 HTML 字符串。不写就用自带的 HTML | `"render_html"` | 想连网页版一起换时 |
+
+说明：
+
+- 只换单期报告的 PNG 和 HTML 这两个出口。报告内容（话题、金句、统计）、网站首页和网站里的图表仍由 chat-digest 生成。
+- 渲染器在生成报告的进程里加载，**在调用模型之前**：路径、函数名写错会立刻失败，不会白花模型费用。`./bin/chat-digest doctor` 会检查这一项（`--host-only` 时只检查文件在不在，因为加载要在运行时镜像里做）；QQ 用 `qq_service.py --config … --check-config` 检查，输出里的 `renderer` 是实际用到的渲染器。
+- 渲染器文件旁边的 `.py` 文件只给它自己用：它 `import` 同目录的模块时拿到的是它自己的那份，不会替换 chat-digest 已经加载的同名模块。
+- 渲染器运行在和 chat-digest 相同的权限下（容器里是 worker 用户，只读根文件系统，没有网络之外的额外权限）。只用你信任的渲染器代码。它要用的字体放在运行时镜像里能读到的位置；微信日报会把 `runtime/report-fonts/` 挂到容器的 `/app/runtime/report-fonts`。
+- 渲染器的代码不属于本仓库，许可证由它自己负责；不要把来源不明的代码放进来。
+
 ## `runtime/gemini-model.json`
 
 模板：[`examples/gemini-model.example.json`](../examples/gemini-model.example.json)。文件名沿用 v1，接口不限厂商：任何 OpenAI 兼容的 `/chat/completions` 都可以。

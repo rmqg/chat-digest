@@ -25,6 +25,7 @@ import chat_export
 from model_fallback import providers as model_providers, identity as provider_identity, is_fallback_error
 from structured import parse_object, read_completion, CompletionReadError
 import daily_report as report_module
+import render_plugin
 
 
 def _is_own_report(message: dict, text_hashes: set[str], image_hashes: set[str], message_ids: set[str]) -> bool:
@@ -588,9 +589,10 @@ def _run(args: argparse.Namespace) -> int:
                                          "voice": "not analyzed", "video": "not analyzed"}
         stem = f"{base}-{edition}"
         html_path, json_path, png_path = out / f"{stem}.html", out / f"{stem}.json", out / f"{stem}.png"
-        html_path.write_text(report_module.render_html(report), encoding="utf-8")
+        renderer = getattr(args, "renderer", None) or render_plugin.load(None, report_module)
+        html_path.write_text(renderer.html(report), encoding="utf-8")
         json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        report_module.render_png_pillow(report, png_path)
+        renderer.png(report, png_path)
         editions[edition] = {"html": str(html_path), "json": str(json_path), "png": str(png_path)}
     trace_path = out / f"{base}-editions.sources.json"
     trace_path.write_text(json.dumps({"conversation_id": conversation["conversation_id"],
@@ -619,6 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--exclude-own-text-sha256', help='private fingerprints of self-sent site access notices')
     parser.add_argument('--exclude-own-image-sha256', help='private fingerprints of self-sent report PNGs')
     parser.add_argument('--exclude-message-ids', help='private export message ids of self-sent deliveries')
+    render_plugin.add_arguments(parser)
     return parser
 
 
@@ -636,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.list_conversations and not args.model_config:
         raise SystemExit("--model-config is required; no default cloud API is used")
     try:
+        # Load the renderer before any model call, so a broken render.module fails fast and for free.
+        args.renderer = render_plugin.load(render_plugin.spec_from_args(args), report_module)
         return _run(args)
     except Exception as exc:
         print(f"digest: {exc}", file=sys.stderr)

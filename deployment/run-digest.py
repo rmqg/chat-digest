@@ -13,6 +13,7 @@ from image_pipeline import process_window
 from model_fallback import providers as model_providers
 
 import settings
+import render_plugin
 ROOT = Path(__file__).resolve().parents[1]
 STALE_TEMP_PREFIXES = ('.digest-', '.images-', '.web-context-', '.prepared-images-', '.image-stage-')
 STALE_TEMP_SECONDS = 6 * 3600
@@ -79,6 +80,10 @@ def main():
     fonts = settings.RUNTIME / "report-fonts"
     if fonts.is_dir():
         common += ["--mount", f"type=bind,src={fonts},dst=/app/runtime/report-fonts,readonly"]
+    # Optional external renderer (render.module): its directory is mounted read-only at /render.
+    render_inside, render_dir = render_plugin.container_spec(project.get("render"))
+    if render_dir is not None:
+        common += ["--mount", f"type=bind,src={render_dir},dst=/render,readonly"]
     window = ["--export-root", "/export", "--runtime-dir", "/work"]
     start = args.start if on_demand else end - int(args.hours * 3600)
     if on_demand:
@@ -102,7 +107,7 @@ def main():
     command = common + ["--name", container, "--network", project["docker_network"]] + models + [
         image, "/tool/digest.py", *window, "--output-dir", "/reports", "--model-config", "/models/gemini.json",
         "--image-understanding", _work_path(stage["understanding_path"], work),
-        "--auxiliary-context", _work_path(stage["auxiliary_path"], work)]
+        "--auxiliary-context", _work_path(stage["auxiliary_path"], work), *render_plugin.cli_args(render_inside)]
     model_config = json.loads((settings.RUNTIME / "gemini-model.json").read_text(encoding="utf-8"))
     timeout = 900 * len(model_providers(model_config))  # every configured provider may be tried once
     try:

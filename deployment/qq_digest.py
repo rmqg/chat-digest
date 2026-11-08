@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / 'agent_console'))
 
 import digest
 import daily_report
+import render_plugin
 
 MAX_WINDOW = 604800
 UTC8 = timezone(timedelta(hours=8))
@@ -436,7 +437,7 @@ def _group_avatar(runtime: Path, messages: list[dict], group_id: int) -> dict:
     return avatars
 
 
-def attach_source_assets(report_paths, sources_snapshot, runtime_dir) -> dict:
+def attach_source_assets(report_paths, sources_snapshot, runtime_dir, html_renderer=None) -> dict:
     """Attach verified cached source images to report references; leave summaries and PNGs untouched."""
     report_paths = list(map(Path, report_paths))
     source = json.loads(Path(sources_snapshot).read_text(encoding='utf-8')) if isinstance(sources_snapshot, (str, Path)) else sources_snapshot
@@ -522,7 +523,7 @@ def attach_source_assets(report_paths, sources_snapshot, runtime_dir) -> dict:
                     attached += len(assets)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         html_path = report_path.with_suffix('.html')
-        html_path.write_text(daily_report.render_html(report), encoding='utf-8')
+        html_path.write_text((html_renderer or daily_report.render_html)(report), encoding='utf-8')
     return {'reports': len(report_paths), 'images_attached': attached}
 
 
@@ -650,6 +651,7 @@ def _parse_args(argv=None):
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--start', type=int, required=True)
     parser.add_argument('--end', type=int, required=True)
+    render_plugin.add_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -658,6 +660,8 @@ def run(args) -> dict:
         raise ValueError('--group-id must be a positive integer')
     if not (1 <= args.end - args.start <= MAX_WINDOW):
         raise ValueError('--start/--end must define a window from 1 to 604800 seconds')
+    # Load the renderer before any model call, so a broken render.module fails fast and for free.
+    renderer = render_plugin.load(render_plugin.spec_from_args(args), daily_report)
     snapshot = json.loads(args.sources_json.read_text(encoding='utf-8'))
     if (not isinstance(snapshot, dict) or type(snapshot.get('group_id')) is not int
             or snapshot.get('group_id') != args.group_id
@@ -730,7 +734,7 @@ def run(args) -> dict:
             report['media_understanding']['images'].update(image_counts)
         stem = f'{base}-{edition}'
         html_path, json_path, png_path = output / f'{stem}.html', output / f'{stem}.json', output / f'{stem}.png'
-        _stage_call(f'render:{edition}', _render_edition, report, html_path, json_path, png_path)
+        _stage_call(f'render:{edition}', _render_edition, report, html_path, json_path, png_path, renderer)
         paths[edition] = {'html': str(html_path), 'json': str(json_path), 'png': str(png_path)}
         reports[edition] = report
     sources_path = output / f'{base}-sources.json'
@@ -740,16 +744,19 @@ def run(args) -> dict:
                      for message in _safe_public_snapshot({'group_id': args.group_id,
                          'group_name': snapshot['group_name'], 'messages': normalized})['messages']]})
     _stage_call('source_assets', attach_source_assets,
-                [paths[edition]['json'] for edition in ('brief', 'review')], sources_path, runtime)
+                [paths[edition]['json'] for edition in ('brief', 'review')], sources_path, runtime,
+                html_renderer=renderer.html)
     return {'files': {'editions': paths, 'sources': str(sources_path)},
             'counts': {'messages': len(normalized), 'images': image_counts.get('total', 0),
                        'members': reports['brief']['stats']['members']}}
 
 
-def _render_edition(report: dict, html_path: Path, json_path: Path, png_path: Path) -> None:
-    html_path.write_text(daily_report.render_html(report), encoding='utf-8')
+def _render_edition(report: dict, html_path: Path, json_path: Path, png_path: Path,
+                    renderer: render_plugin.Renderer | None = None) -> None:
+    renderer = renderer or render_plugin.load(None, daily_report)
+    html_path.write_text(renderer.html(report), encoding='utf-8')
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-    daily_report.render_png_pillow(report, png_path)
+    renderer.png(report, png_path)
 
 def main(argv=None) -> int:
     try:

@@ -30,6 +30,8 @@ python3 scripts/install-ocr.py --target /srv/qq-digest/ocr-deps --wheel-dir /srv
 docker build --build-arg WITH_OCR=1 -t chat-digest-runtime:2.0.0 .
 ```
 
+想换报告图片的样式，可以在服务配置里加可选的 `render` 对象，指向自己的渲染器文件（字段和微信日报相同，见 [CONFIGURATION.md 的外部渲染器一节](CONFIGURATION.md#外部渲染器render)）。QQ 服务在容器里运行时，`render.module` 写容器内的路径，并把渲染器目录只读挂进容器；`--check-config` 会实际加载一次并在输出的 `renderer` 里给出结果。
+
 相对路径以 JSON 配置文件所在目录为基准。服务配置至少应明确 `onebot_url`、`onebot_token_file`、`group_id`、`group_name`、`expected_self_id`、`bot_names`、`runtime_dir`、`reports_dir`、`model_config`、`enabled_from` 和 `daily_hour`。`enabled_from` 是 Unix 秒时间戳，防止启用前的历史消息被当作新触发。模板中的群、账号、密码、URL 和 token 路径均为虚构/占位，必须替换；不得将真实 token 或 API key 放入仓库。
 
 推荐先在私有配置中将 OneBot WebSocket URL 指向本机 NapCat 服务；确认 token 权限和群/机器人身份后，以服务账号运行 QQ worker。先前台运行并观察日志/运行状态，不要一开始就启用公网站点或长期自动发送。
