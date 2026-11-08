@@ -2,7 +2,6 @@ import importlib.util
 import json
 import unittest
 from pathlib import Path
-import hashlib
 import tempfile
 from unittest.mock import patch
 from report_metrics import body_token_count

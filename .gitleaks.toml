@@ -2,11 +2,8 @@
 useDefault = true
 
 [[allowlists]]
-description = "Exact public synthetic SQLCipher test vectors, never real credentials"
+description = "Public SHA-256 integrity value of tiktoken's o200k_base data file, not a credential"
 condition = "AND"
-paths = ['''(^|/)examples/synthetic/fixture-key\.json$''']
+paths = ['''(^|/)scripts/doctor\.py$''']
 regexTarget = "secret"
-regexes = [
-  '''^aad9272dd880fec8c2e134a09d3548a204ccb8a72ca7f765fe26bd0b95eca69a$''',
-  '''^1768eab044223341a3f023889672aaa69eefd1037639634bca3c61601d4f7334$''',
-]
+regexes = ['''^446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d$''']
