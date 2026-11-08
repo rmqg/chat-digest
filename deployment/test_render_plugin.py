@@ -18,7 +18,13 @@ def _builtin():
 
 
 PLUGIN = '''
+from dataclasses import dataclass
 from helper_for_plugin import marker
+
+
+@dataclass
+class Layout:  # a dataclass needs its module registered while it is being imported
+    width: int = 1200
 
 def draw(report, output):
     output.write_bytes(("external:" + marker() + ":" + report["title"]).encode())

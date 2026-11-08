@@ -92,10 +92,13 @@ def _load_module(path: Path) -> ModuleType:
         if spec is None or spec.loader is None:
             raise RenderConfigError("render.module cannot be imported")
         module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # dataclasses and pickling look the module up while it is executing
         spec.loader.exec_module(module)
     except RenderConfigError:
+        sys.modules.pop(name, None)
         raise
     except Exception as exc:
+        sys.modules.pop(name, None)
         raise RenderConfigError(f"render.module failed to import: {type(exc).__name__}") from exc
     finally:
         sys.path.remove(str(directory))

@@ -24,7 +24,7 @@ v2.0.0 起，仓库里**不再包含**任何借用的源码文件。v1.x 里随�
 | websockets 16.0 | QQ OneBot v11 连接 | BSD-3-Clause |
 | o200k_base 分词数据 | tiktoken 首次使用时从 OpenAI 公开地址下载，缓存后离线使用 | 由 OpenAI 通过 tiktoken 公开提供；本仓库不分发该文件 |
 | 可选 OCR：`deployment/ocr-requirements.txt` 与 `ocr-wheel-lock.json` 里固定的 rapidocr-onnxruntime 及其依赖 | 图片文字识别 | 各自上游许可证（rapidocr-onnxruntime 为 Apache-2.0，onnxruntime 为 MIT，opencv 为 Apache-2.0 等），模型文件许可证由上游决定 |
-| Docker 基础镜像 `python:3.12-slim` 与 Debian 软件包（procps、libgl1、libglib2.0-0、fontconfig、fonts-noto-cjk） | 隔离的运行时镜像 | 各自许可证；镜像由你在本地构建，本项目不发布镜像 |
+| Docker 基础镜像 `python:3.12-slim` 与 Debian 软件包（procps、libgl1、libglib2.0-0、libraqm0 及其依赖 libfribidi0、fontconfig、fonts-noto-cjk） | 隔离的运行时镜像 | 各自许可证；镜像由你在本地构建，本项目不发布镜像 |
 
 安装或构建这些依赖不会把它们改成 MIT 许可。
 

@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CHAT_DIGEST_FONT=/source/assets/fonts/ResourceHanRoundedCN-Regular.ttf
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends procps libgl1 libglib2.0-0 fontconfig fonts-noto-cjk \
+    && apt-get install -y --no-install-recommends procps libgl1 libglib2.0-0 libraqm0 fontconfig fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
