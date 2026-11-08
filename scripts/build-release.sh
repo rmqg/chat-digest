@@ -17,8 +17,9 @@ fi
 NAME=chat-digest-$VERSION
 mkdir -p dist
 rm -f "dist/$NAME.tar.gz" dist/SHA256SUMS
-# git archive uses the commit time for every entry and gzip -n drops the gzip timestamp,
-# so the same commit always produces byte-identical archives.
-git archive --format=tar --prefix="$NAME/" HEAD | gzip -n -9 > "dist/$NAME.tar.gz"
-(cd dist && sha256sum "$NAME.tar.gz" > SHA256SUMS)
+# git archive uses the commit time for every entry, and Python's gzip with mtime=0 gives the same bytes on
+# Linux and macOS (system gzip implementations differ), so one commit always yields one archive.
+PYTHON=${PYTHON:-python3}
+git archive --format=tar --prefix="$NAME/" HEAD | "$PYTHON" -c 'import gzip, sys; sys.stdout.buffer.write(gzip.compress(sys.stdin.buffer.read(), 9, mtime=0))' > "dist/$NAME.tar.gz"
+(cd dist && "$PYTHON" -c 'import hashlib, sys; name = sys.argv[1]; print(hashlib.sha256(open(name, "rb").read()).hexdigest() + "  " + name)' "$NAME.tar.gz" > SHA256SUMS)
 cat dist/SHA256SUMS
