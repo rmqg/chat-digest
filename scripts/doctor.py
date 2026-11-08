@@ -203,6 +203,22 @@ def check_render(project: dict, import_module: bool) -> None:
         report("renderer", "fail", str(exc), "check render.module, render.function and render.html_function")
 
 
+def check_site() -> None:
+    import local_site
+    path = local_site.config_path()
+    if not path.is_file():
+        report("site", "warn", f"report website is not configured: {path}", "run ./bin/chat-digest site --init (remote publishing does not need it)")
+        return
+    try:
+        config = local_site.load_config(path)
+    except (OSError, ValueError) as exc:
+        report("site", "fail", f"invalid {path.name}: {exc}", "fix the file, or delete it and run ./bin/chat-digest site --init")
+        return
+    if path.stat().st_mode & 0o077:
+        report("site", "warn", f"{path.name} is readable by other users", f"chmod 600 {path}")
+    report("site", "ok", f"report website configured on 127.0.0.1:{config['port']} (start: ./bin/chat-digest site --serve)")
+
+
 def check_docker(project: dict) -> None:
     if shutil.which("docker") is None:
         report("docker", "warn", "docker not found; scheduled processing needs it", "install Docker Engine 24+ (see docs/INSTALL.md)")
@@ -243,6 +259,7 @@ def main(argv=None) -> int:
             check_model()
             check_sender(project, args.probe_send)
             check_render(project, import_module=not args.host_only)
+            check_site()
             if not args.no_docker:
                 check_docker(project)
     failed = [item for item in RESULTS if item["status"] == "fail"]

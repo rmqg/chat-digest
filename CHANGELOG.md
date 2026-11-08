@@ -2,6 +2,14 @@
 
 ## 2.0.0
 
+**新的默认渲染器和报告网站**
+
+- 自带渲染器重写为 clean-room 实现：只参考了旧版的外观（合成数据的样图和文字描述），没有使用旧版代码。PNG 和 HTML 用同一套浅紫简约设计，长图宽 1080、比旧版短约三成，功能区块保持：群头像、统计、一句话总结、消息节奏、话题（来源可展开）、金句、活跃前 20 名。渲染接口和输入格式不变。
+- 活跃榜的单位从 `tokens` 改为 `词元`。报告标题不再有固定前缀：取数据里的 `title_prefix`，否则取 `report_title` 或 `CHAT_DIGEST_REPORT_TITLE`，都没有时显示“群聊日报”。
+- PNG 里字体缺字的字符（例如 emoji）直接略去，不再画成方框；HTML 不受影响。
+- 新增并默认使用**本机模式**网站（`./bin/chat-digest site`）：直接读本机报告，带登录，只监听 `127.0.0.1`，微信和 QQ 报告都能看；`init` 自动创建配置，`doctor` 会检查。原来的远端模式（`publish_reports.py`、`qq_publish.py`、`image-origin.py`）保留，配置不变。
+- 报告列表、QQ 报告站、登录页、出错页统一成同一套样式。用旧渲染器生成的历史报告页面保持原有排版。
+
 **可选的外部渲染器（生产替换时补充）**
 
 - 新增 `render` 配置（微信写在 `runtime/project.json`，QQ 写在服务配置）：`render.module` 指向宿主上的渲染器 `.py` 文件，`render.function` 画 PNG，可选的 `render.html_function` 画单期 HTML；不配置时照旧用自带渲染器。渲染器在调用模型之前加载，写错立刻失败；`doctor` 和 QQ `--check-config` 会检查。微信日报把渲染器目录只读挂到容器的 `/render`。新增 [docs/REPORT-JSON.md](docs/REPORT-JSON.md) 说明报告字典的格式。

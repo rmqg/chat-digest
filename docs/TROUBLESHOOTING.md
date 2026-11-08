@@ -8,6 +8,17 @@
 
 下面按看到的症状列。所有命令都在项目目录里执行；查看状态文件不会改变任何东西。
 
+## 报告网站（本机模式）
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| 打不开 `http://127.0.0.1:8787/` | 站点没启动，或者你在另一台设备上访问（站点只监听本机） | `./bin/chat-digest site --check-config`，再 `site --serve`；别的设备要访问时看 [INSTALL.md](INSTALL.md#37-报告网站) |
+| 忘了密码 | 明文不保存 | `./bin/chat-digest site --set-password` |
+| 登录后马上又回到登录页 | 走 HTTP 访问，但 `cookie_secure` 是 `true` | 通过 HTTPS 访问，或把它改回 `false` 后重启 |
+| 显示“尝试太频繁” | 一分钟内失败超过 10 次 | 等一分钟再试 |
+| 显示“报告暂时不可用” | 还没有成对的简报和回顾，或者最近一次整理失败 | 看站点进程的标准错误；`./bin/chat-digest doctor` |
+| 首页没有微信报告 | 没配 `group.conversation_id`，或改过 `report_prefix` | 检查 `runtime/project.json`，改完重启站点 |
+
 ## 安装和 demo
 
 | 症状 | 原因 | 处理 |

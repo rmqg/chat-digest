@@ -25,6 +25,7 @@ case "$cmd" in
     on-demand)          exec "$PY" "$HERE/deployment/on-demand.py" "$@" ;;
     watchdog)           exec "$PY" "$HERE/deployment/daily-watchdog.py" "$@" ;;
     qq)                 exec "$PY" "$HERE/deployment/qq_service.py" "$@" ;;
+    site)               exec "$PY" "$HERE/deployment/local_site.py" "$@" ;;
     version)            cat "$HERE/VERSION" ;;
     help|-h|--help)
         cat <<'USAGE'
@@ -43,6 +44,7 @@ usage: chat-digest <command> [options]
   on-demand            --serve | --once | --status : "@bot summarize" requests
   watchdog             --tick | --check-config : delivery watchdog (Bark)
   qq                   QQ OneBot service (see docs/QQ.md)
+  site                 --serve | --check-config | --init | --set-password : report website on this machine
   version              print the version
 USAGE
         ;;

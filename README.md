@@ -58,7 +58,7 @@ docker build -t chat-digest-runtime:2.0.0 . && ./bin/chat-digest pin-images
 
 ## 文档
 
-- [安装](docs/INSTALL.md)：从零到每天自动出报，systemd 和 OpenWrt procd 两种方式
+- [安装](docs/INSTALL.md)：从零到每天自动出报，systemd 和 OpenWrt procd 两种方式；[报告网站](docs/INSTALL.md#37-报告网站)默认运行在本机（`./bin/chat-digest site --serve`），要放到别的服务器上才需要远端模式
 - [配置](docs/CONFIGURATION.md)：每个参数的含义、类型、默认值、示例和什么时候改
 - [排障](docs/TROUBLESHOOTING.md)：按症状给命令
 - [架构](docs/ARCHITECTURE.md)：数据流、阶段、状态文件

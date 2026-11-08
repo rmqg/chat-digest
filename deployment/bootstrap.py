@@ -81,8 +81,13 @@ def init_runtime() -> None:
             os.chown(project, worker_uid, worker_gid)
         project.chmod(0o600)
         _set_owner(project, worker_uid, worker_gid)
-    print(json.dumps({"status": "initialized", "config_created": created, "runtime": str(runtime), "config": str(project),
-                      "next": "set export.root, group.conversation_id/name and send in runtime/project.json, build the runtime image, then run bootstrap --pin-images"}, ensure_ascii=False))
+    import local_site
+    site = local_site.init_config(runtime / local_site.CONFIG_NAME, owner=(worker_uid, worker_gid))
+    result = {"status": "initialized", "config_created": created, "runtime": str(runtime), "config": str(project),
+              "next": "set export.root, group.conversation_id/name and send in runtime/project.json, build the runtime image, then run bootstrap --pin-images"}
+    if site:
+        result["report_site"] = {**site, "note": "shown only once; start the site with ./bin/chat-digest site --serve"}
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def _configured_images(config: dict) -> dict[str, str]:

@@ -92,12 +92,12 @@ class RhythmBucketTests(unittest.TestCase):
         self.assertIn('甲', brief)
         self.assertIn('查看来源', brief)
         self.assertIn('发言成员', brief)
-        self.assertIn('19 tokens', brief)
+        self.assertIn('19 词元', brief)
         self.assertNotIn('不应自动展开的原始聊天样本', brief)
         self.assertNotIn('群友金句', no_quotes)
         self.assertIn('活跃前20名', no_quotes)
         self.assertIn('群友金句', review)
-        self.assertIn('19 tokens', review)
+        self.assertIn('19 词元', review)
         without_quotes = {**report, "quotes": []}
         quote_only = {"edition": "brief", "one_line": quote["text"]}
         self.assertEqual(daily_report.body_chinese_count(report) - daily_report.body_chinese_count(without_quotes),
@@ -285,8 +285,8 @@ class RhythmBucketTests(unittest.TestCase):
             {"username": "same-a", "name": "同名", "tokens": 40},
         ]}
         rendered = daily_report.rank_rows_html(report)
-        self.assertIn("40 tokens", rendered)
-        self.assertIn("12 tokens", rendered)
+        self.assertIn("40 词元", rendered)
+        self.assertIn("12 词元", rendered)
         self.assertEqual([row["username"] for row in daily_report.ranked_participants(report)], ["same-a", "same-b"])
         archived = daily_report.rank_rows_html({"participants": [{"username": "old", "name": "旧档", "count": 9}]})
         self.assertIn("9 条", archived)

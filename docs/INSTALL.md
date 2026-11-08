@@ -131,6 +131,56 @@ sudo systemctl enable --now chat-digest-watchdog.timer   # Bark 投递监控（�
 - 发送命令返回 `unknown`（已经或可能已经提交、但没能确认）时，chat-digest **不会自动重发**，当天状态停在 `unknown`，看门狗会提醒你。人工确认群里有没有收到，再决定怎么处理；不要为了重发去删回执。
 - `failed`（确定没发出去）会在下一分钟重试；`invalid`（参数错误）在你改好发送配置之前不会重试。
 
+### 3.7 报告网站
+
+默认用**本机模式**：chat-digest 自带一个只用标准库的站点进程，直接读本机 `runtime/` 里的报告和图片，不需要发布、rsync、原图回源或隧道。微信和 QQ 的报告都能看。
+
+```sh
+./bin/chat-digest init            # 第一次运行时创建 runtime/local-site.json，并只显示一次账号和随机密码
+./bin/chat-digest site --serve    # 启动，浏览器打开 http://127.0.0.1:8787/
+./bin/chat-digest site --set-password   # 以后想换密码时
+```
+
+已经 `init` 过的旧部署，用 `./bin/chat-digest site --init` 单独创建配置。长期运行用 `deployment/services/` 里的 `chat-digest-site` 服务（systemd 或 procd，`install.sh --services` 会复制过去，但不会替你启用）。QQ 群写进配置的 `qq_groups`，见 [CONFIGURATION.md](CONFIGURATION.md#runtimelocal-sitejson)。
+
+站点只监听 `127.0.0.1`，并且要登录。想从别的设备访问，自己在前面加反代或隧道，**并把 `cookie_secure` 改成 `true`**（走 HTTPS 时）。下面三种任选一种，都不要去掉站点自己的登录：
+
+**Caddy**（自动申请 HTTPS 证书）：
+
+```caddyfile
+reports.example.org {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+**Nginx**（证书自备）：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name reports.example.org;
+    ssl_certificate     /etc/ssl/reports.example.org.crt;
+    ssl_certificate_key /etc/ssl/reports.example.org.key;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+**Cloudflare Tunnel**（机器没有公网 IP 时），`~/.cloudflared/config.yml`：
+
+```yaml
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_ID.json
+ingress:
+  - hostname: reports.example.org
+    service: http://127.0.0.1:8787
+  - service: http_status:404
+```
+
+**什么时候才需要远端模式**：网站必须放在另一台公网服务器上（报告机器不能对外开放，也不方便跑隧道），或者你已经有一套静态站点要沿用。远端模式用 `publish_reports.py`、`qq_publish.py` 把网页同步过去，原图留在本机由 `image-origin.py` 回源，配置见 `runtime/report-site.json` 和 `runtime/image-origin.json`。两种模式互不影响，可以同时用。
+
 ## 4. 升级和卸载
 
 升级：停服务 → 换代码 → `./scripts/install.sh --apply` → 重新构建镜像并 `bootstrap.py --refresh-pins` → `doctor` → 启服务。从 v1.2.x 升级见 [MIGRATION-v2.md](MIGRATION-v2.md)。

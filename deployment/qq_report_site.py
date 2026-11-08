@@ -19,6 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import ThreadingMixIn, UnixStreamServer
 from urllib.parse import unquote, urlsplit
 
+from report_web_style import error_page, site_page
+
 _GROUP_ID = re.compile(r"[0-9]{1,32}\Z")
 _SAFE_STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,180}\Z")
 _ALLOWED_ASSET_SUFFIXES = {
@@ -230,11 +232,8 @@ def _index_html(group_id: str, group: dict) -> bytes:
         rows.append('<li><a href="' + html.escape(entry["stem"] + ".html", quote=True) + '">' + label
                     + '</a> · ' + html.escape(str(window)) + ' · 消息 '
                     + html.escape(str(stats.get("messages", 0))) + ' 条</li>')
-    body = "\n".join(rows) if rows else "<li>暂无报告</li>"
-    page = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<meta name="robots" content="noindex,nofollow"><title>' + html.escape(group["name"]) + '</title><h1>'
-            + html.escape(group["name"]) + '</h1><ul>' + body + '</ul></html>')
-    return page.encode("utf-8")
+    body = "\n".join(rows) if rows else '<li class="empty">暂无报告</li>'
+    return site_page(group["name"], '<ul class="reports">' + body + '</ul>')
 
 
 def make_handler(config: dict):
@@ -249,6 +248,8 @@ def make_handler(config: dict):
             super().end_headers()
 
         def _send(self, status: int, body: bytes = b"", content_type: str = "text/plain; charset=utf-8"):
+            if status >= 400 and not body:
+                body, content_type = error_page(status), "text/html; charset=utf-8"
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -257,11 +258,7 @@ def make_handler(config: dict):
                 self.wfile.write(body)
 
         def _unauthorized(self, realm="QQ reports"):
-            body = (
-                '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-                '<title>需要登录</title></head><body><h1>需要登录</h1>'
-                '<p>请在浏览器的登录窗口中使用当前群的专用账号。</p></body></html>'
-            ).encode('utf-8')
+            body = error_page(401, '请在浏览器的登录窗口中使用当前群的专用账号。')
             self.send_response(401)
             self.send_header("WWW-Authenticate", f'Basic realm="{realm}", charset="UTF-8"')
             self.send_header("Content-Type", "text/html; charset=utf-8")

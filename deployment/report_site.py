@@ -16,6 +16,7 @@ from timezones import project_zone
 import settings
 
 import source_media
+from report_web_style import reader_styles, site_page
 import xml.etree.ElementTree as ET
 _ROOT = Path(__file__).resolve().parents[1]
 _RENDERER_DIR = next(path for path in (_ROOT / 'agent_console', _ROOT / 'source/agent_console')
@@ -130,9 +131,7 @@ def _index_html(items: list[tuple[str, dict]]) -> bytes:
                     '<p class="period">' + html.escape(str(period)) + '</p><p class="stats">消息 ' + html.escape(str(messages))
                     + ' 条 · 成员 ' + html.escape(str(members)) + ' 人</p><p>' + html.escape(str(summary)) + '</p>' + link_bar + '</article>')
     body = '\n'.join(rows) if rows else '<p class="empty">暂无日报。</p>'
-    return ('''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>群聊日报</title><style>
-*{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:#202b3c;font:16px/1.65 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}main{width:min(760px,100%);margin:auto;padding:24px 16px 48px}h1{font-size:1.7rem;margin:8px 0 20px}article{background:#fff;border:1px solid #e7eaf0;border-radius:12px;padding:16px;margin:12px 0;overflow-wrap:anywhere}h2{font-size:1.18rem;margin:0}a{color:#2459a6;text-decoration:none}a:hover{text-decoration:underline}p{margin:8px 0 0}.period,.stats{color:#647084;font-size:.9rem}.editions{font-size:.9rem}.empty{color:#647084}
-</style></head><body><main><h1>群聊日报</h1>''' + body + "</main></body></html>\n").encode("utf-8")
+    return site_page('群聊日报', body)
 
 def _sent_report_hashes(reports_dir: Path) -> set[str]:
     hashes = set()
@@ -761,7 +760,6 @@ def build_site(reports_dir: Path, output_dir: Path) -> dict:
         switch = (' · <a href="' + html.escape(PurePosixPath(peer_href).name, quote=True) + '">切换到' + ('详细回顾' if other == 'review' else '简报') + '</a>') if peer_href else ''
         back = '<p class="site-home"><a href="../index.html">返回日报首页</a>' + switch + '</p>'
         rewritten = re.sub(r"(<body(?:\s[^>]*)?>)", r"\1" + back, rewritten, count=1, flags=re.IGNORECASE)
-        from report_web_style import reader_styles
         reader_css = reader_styles(report_renderer)
         if not re.search(r'<meta\b[^>]*name\s*=\s*["\']?viewport', rewritten, re.I):
             reader_css += '<meta name="viewport" content="width=device-width,initial-scale=1">'
