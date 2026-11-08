@@ -78,7 +78,7 @@ v1 的 OpenWrt 服务名是 `wechat-images`、`wechat-summary-commands`、`wecha
 - 已发回执里的 `server_id`（微信消息 ID）在 v2 换成了 `send_request_id`（chat-send/v1 的幂等键）。v1 留下的带 `server_id` 的回执，v2 认作“v1 已确认送达”，记成 `legacy-v1:<server_id>`，不会重发。仍建议在当天日报完成以后、第二天出报以前切换。
 - 报告是否“自己发出去的”在 v2 用导出里的 `is_self` 加图片哈希判断。v1 时期发出的报告图片若被 wechat-export-send 导出为 `is_self: true` 且哈希一致，也会被排除；哈希不一致（例如客户端重新压缩过）时，那一条会作为一张普通图片出现在报告里。
 - 摘要缓存的键包含消息内容，v2 消息 ID 的生成方式变了，所以切换后第一次生成会重新请求模型，属于正常现象。
-- v1 的 `prepared-image-cache.json` 会被逐步替换，不需要手动处理。
+- 历史报告来源卡片里的原图，靠 `runtime/digest/prepared-image-cache.json` 的条目和 `runtime/digest/images/decoded/` 里的文件。要保留它们，就把 v1 的这两样合并到 v2：缓存条目只添加 v2 没有的键，图片只添加 v2 没有的文件（同一个分区上可以用硬链接，不占额外空间）。不合并也能运行，新报告不受影响，但历史报告的来源卡片会显示“暂不可用”。
 
 ## 回滚
 

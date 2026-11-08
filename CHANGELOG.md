@@ -8,6 +8,7 @@
 - 运行时镜像加装 `libraqm0`：Pillow 用复杂文字排版画中文，标点和字距与带 raqm 的系统一致。
 - 修复：微信私有的 WXGF（HEVC）图片被当成“原图缺失”，实测一天 30 张里有 9 张因此没有图片描述。`prepare-images` 恢复解码，运行时镜像加装 `ffmpeg`；解码失败或超时只影响那一张。
 - 修复：宿主没有时区数据库（OpenWrt/iStoreOS）时，`daily-job`、`daily-watchdog`、报告网站等宿主侧脚本一启动就报 `ZoneInfoNotFoundError`。不走夏令时的常用时区改用固定偏移，其他时区给出明确的安装提示，`doctor` 增加时区检查。
+- 迁移文档更正：要保留历史报告来源卡片里的原图，需要把 v1 的 `prepared-image-cache.json` 条目和 `digest/images/decoded/` 文件合并到 v2。
 - OCR 依赖下载失败时自动重试（最多 6 次，HTTP 4xx 不重试）。走代理或网络不稳时，大文件常在传输中途断开，不再让整次镜像构建失败。
 - 外部渲染器加载时先登记模块，渲染器里用 `dataclass` 也能正常导入。
 - 调度脚本以 root 运行时（OpenWrt cron），新建的图片任务目录交给 `worker_uid`，阶段容器才能写入。`init` 改用 `project.json` 里的 `worker_uid`。
