@@ -178,6 +178,21 @@ class DigestExportTests(ExportFixture):
 
 
 
+class AliasTests(unittest.TestCase):
+    def test_aliases_extend_receipt_matching(self):
+        import image_pipeline
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            (work / "sent-receipts").mkdir()
+            for name, chat in (("old", "legacy-id"), ("new", "g_new"), ("other", "g_other")):
+                (work / "sent-receipts" / f"{name}.json").write_text(json.dumps(
+                    {"status": "sent", "chat_id": chat, "png_sha256": name * 8}))
+            project = {"group": {"conversation_id": "g_new", "aliases": ["legacy-id"]}}
+            with patch.object(image_pipeline, "WORK", work):
+                found = image_pipeline.delivered_fingerprints(project)
+        self.assertEqual(found["images"], sorted(["old" * 8, "new" * 8]))
+
+
 class LegacyConfigurationTests(unittest.TestCase):
     def test_v1_group_id_configuration_is_rejected_with_migration_hint(self):
         import settings

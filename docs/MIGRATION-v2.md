@@ -37,7 +37,7 @@ v2 的运行时镜像不再包含 gdb、X11 库和 wcdb-key-tool，`requirements
 
 | v1 字段 | v2 怎么办 |
 |---|---|
-| `group.id`（例如 `…@chatroom`） | 删掉，改成 `group.conversation_id`：值来自导出目录，用 `./bin/chat-digest list-conversations --export-root <导出目录>` 查 |
+| `group.id`（例如 `…@chatroom`） | 改成 `group.conversation_id`（值来自导出目录，用 `./bin/chat-digest list-conversations --export-root <导出目录>` 查），并把旧值放进 `group.aliases`，网站历史和旧回执才能继续对上 |
 | `group.name` | 保留 |
 | （无） | 新增 `export.root`：导出目录的绝对路径 |
 | `bot.username` | 删掉。机器人账号在导出里的 ID 写进 `bot.sender_ids`（可选） |

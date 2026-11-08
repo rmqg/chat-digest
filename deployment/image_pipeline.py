@@ -181,14 +181,14 @@ def process_window(start: int, end: int, *, max_images: int = 0, wait_for_lock: 
 def delivered_fingerprints(project: dict) -> dict:
     """Fingerprints of what this project already sent into the conversation, so reports exclude themselves."""
     images, texts, message_ids = [], [], []
-    conversation = project['group']['conversation_id']
+    conversations = settings.conversation_ids(project)
     for directory in ('sent-receipts', 'on-demand-receipts', 'site-access-receipts'):
         for path in sorted((WORK / directory).glob('*.json')):
             try:
                 receipt = json.loads(path.read_text())
             except (OSError, ValueError):
                 continue
-            if not isinstance(receipt, dict) or receipt.get('chat_id') != conversation:
+            if not isinstance(receipt, dict) or receipt.get('chat_id') not in conversations:
                 continue
             if receipt.get('text_sha256'):
                 texts.append(receipt['text_sha256'])

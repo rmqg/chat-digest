@@ -72,6 +72,18 @@ def load_project(required: bool = False, root: Path | str = ROOT) -> dict[str, A
     return config
 
 
+def conversation_ids(config: dict[str, Any] | None = None) -> set[str]:
+    """The configured conversation plus group.aliases: earlier IDs of the same chat (for example the v1
+    WeChat group ID) whose reports and receipts belong to this conversation's history."""
+    config = config or load_project()
+    group = config.get("group", {})
+    aliases = group.get("aliases", [])
+    if not isinstance(aliases, list) or any(not isinstance(item, str) or not item for item in aliases):
+        raise ValueError("group.aliases must be a list of non-empty strings")
+    current = group.get("conversation_id")
+    return {item for item in [current, *aliases] if isinstance(item, str) and item}
+
+
 def export_root(config: dict[str, Any] | None = None) -> Path:
     """Host path of the chat-export/v1 directory (read-only for this project)."""
     config = config or load_project()

@@ -24,6 +24,7 @@ chat-digest 的配置全部是 `runtime/` 下的 JSON 文件和少量环境变�
 | `export.root` | 字符串（路径） | 无，必填 | chat-export/v1 导出目录在宿主上的路径，chat-digest 只读它。相对路径按项目根目录解析 | `"/srv/wechat-export/acct1/export"` | 导出工具换了输出目录时 |
 | `group.conversation_id` | 字符串 | 无，必填 | 要总结的会话在导出里的 ID（manifest 的 `conversations[].id`），只能含 `A-Z a-z 0-9 _ . -` | `"g_1a2b3c"` | 换总结目标时；用 `chat-digest list-conversations` 查 |
 | `group.name` | 字符串 | 无，必填 | 会话名，只用来提示和核对。程序按 `conversation_id` 选会话；只有命令行没给 ID、配置里也没有 ID 时才按名字精确匹配，重名时要求给 ID。报告里显示的名字取自导出 | `"产品讨论群"` | 群改名后顺手改一下 |
+| `group.aliases` | 字符串数组 | `[]` | 同一个会话以前用过的 ID（例如 v1 的微信群 ID）。带这些 ID 的旧报告继续出现在网站首页，旧回执里的报告图片指纹继续用来排除自发报告 | `["…@chatroom"]` | 从 v1 迁移时填旧的 `group.id` |
 | `send.command` | 字符串数组 | 无；不配置就不能发送 | 实现 chat-send/v1 的发送命令前缀，后面由程序追加 `--to … --image … --request-id … --json` | `["wechat-send"]`，`["docker","exec","wechat","wechat-send"]` | 换发送工具或容器名时 |
 | `send.to` | 字符串 | 无，发送时必填 | 交给发送命令的目标会话（会话名或 conversation_id，由发送工具解释） | `"产品讨论群"` | 换投递目标时 |
 | `send.timeout` | 整数（秒） | `180` | 单次发送的超时，取值 10–3600。超时一律记为 `unknown`，不会自动重发 | `300` | 大图在慢机器上经常超时时调大 |

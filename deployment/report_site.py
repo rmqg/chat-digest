@@ -27,6 +27,7 @@ REPORT_RENDERER_PATH = Path(report_renderer.__file__).resolve()
 
 _PROJECT = settings.load_project()
 TARGET_GROUP = _PROJECT.get('group', {}).get('conversation_id', '')
+TARGET_IDS = settings.conversation_ids(_PROJECT) if TARGET_GROUP else set()
 REPORT_PREFIX = _PROJECT['report_prefix']
 DISPLAY_TZ = ZoneInfo(_PROJECT['timezone'])
 DAILY_HOUR = _PROJECT['daily_hour']
@@ -138,7 +139,7 @@ def _sent_report_hashes(reports_dir: Path) -> set[str]:
     for path in (reports_dir.parent / 'digest/sent-receipts').glob('*.json'):
         try:
             receipt = json.loads(path.read_text(encoding='utf-8'))
-            if receipt.get('status') == 'sent' and receipt.get('chat_id') == TARGET_GROUP:
+            if receipt.get('status') == 'sent' and receipt.get('chat_id') in (TARGET_IDS | {TARGET_GROUP}):
                 hashes.add(receipt['png_sha256'])
         except (OSError, ValueError, KeyError, TypeError):
             continue
@@ -668,7 +669,7 @@ def build_site(reports_dir: Path, output_dir: Path) -> dict:
             record = json.loads(json_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             continue
-        if not isinstance(record, dict) or record.get("chat_username") != TARGET_GROUP:
+        if not isinstance(record, dict) or record.get("chat_username") not in (TARGET_IDS | {TARGET_GROUP}):
             continue
         window = record.get("window")
         if (not isinstance(window, dict) or not isinstance(window.get("end_unix_exclusive"), (int, float))
