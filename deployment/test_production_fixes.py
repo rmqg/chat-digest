@@ -1,5 +1,6 @@
 """Fixes merged from the production deployment after v1.2.4 (fictional providers, no network)."""
 import json
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -86,6 +87,49 @@ class ImageStageTests(unittest.TestCase):
             self.assertEqual((work / "stage-failures.jsonl").stat().st_mode & 0o777, 0o600)
         error = image_pipeline.StageError("ocr_images.py", "exit 1")
         self.assertEqual(error.label, "ocr_images.py: exit 1")
+
+
+class WxgfImageTests(unittest.TestCase):
+    HEADER = b"wxgf\x00\x00" + b"\x00\x00\x00\x01\x40\x01" + b"fake-hevc"
+
+    @staticmethod
+    def module():
+        import importlib.util
+        path = Path(__file__).with_name("prepare-images.py")
+        spec = importlib.util.spec_from_file_location("prepare_images_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def png():
+        import io
+        from PIL import Image
+        data = io.BytesIO()
+        Image.new("RGB", (6, 4), "white").save(data, format="PNG")
+        return data.getvalue()
+
+    def test_wxgf_is_decoded_from_its_hevc_stream(self):
+        module = self.module()
+        self.assertEqual(module.source_image_format(self.HEADER), "hevc")
+        finished = subprocess.CompletedProcess([], 0, stdout=self.png(), stderr=b"")
+        with patch.object(module.subprocess, "run", return_value=finished) as run:
+            data, fmt, dimensions = module.model_image(self.HEADER, "hevc")
+        self.assertEqual((fmt, dimensions, data), ("png", (6, 4), self.png()))
+        self.assertTrue(run.call_args.kwargs["input"].startswith(b"\x00\x00\x00\x01\x40\x01"))
+        self.assertEqual(run.call_args.args[0][0], "ffmpeg")
+
+    def test_every_decode_failure_is_a_value_error_for_one_image_only(self):
+        module = self.module()
+        with self.assertRaisesRegex(ValueError, "no HEVC"):
+            module.decode_wxgf(b"wxgf-without-parameter-set")
+        failures = (FileNotFoundError("ffmpeg"), subprocess.TimeoutExpired("ffmpeg", 30),
+                    subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"x"),
+                    subprocess.CompletedProcess([], 0, stdout=b"", stderr=b""))
+        for failure in failures:
+            options = {"side_effect": failure} if isinstance(failure, Exception) else {"return_value": failure}
+            with patch.object(module.subprocess, "run", **options), self.assertRaises(ValueError):
+                module.decode_wxgf(self.HEADER)
 
 
 class OcrTerminalStateTests(unittest.TestCase):

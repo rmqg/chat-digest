@@ -15,6 +15,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 RUN mkdir -p /opt/tiktoken-cache \
     && python -c "import tiktoken; tiktoken.get_encoding('o200k_base')" \
     && chmod -R a-w /opt/tiktoken-cache
+# WeChat's WXGF images are HEVC; prepare-images decodes them with ffmpeg
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY agent_console /source/agent_console
 COPY deployment /tool

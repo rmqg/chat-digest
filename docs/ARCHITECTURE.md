@@ -42,7 +42,7 @@ flowchart LR
 1. **定时**：`daily-job.py` 每分钟被 systemd timer 或 cron 叫醒一次。没到 `daily_hour` 就直接返回；当天两版都已确认送达也直接返回，不写任何文件。
 2. **取材**：`run-digest.py` 调 `image_pipeline.process_window()`，处理窗口是“前一天 `daily_hour` 到今天 `daily_hour`”。
 3. **阶段**（一次只跑一个容器，避免小内存机器同时起三个 1 GB 容器）：
-   - `prepare-images`：从导出里挑出窗口内的图片消息。只用 `status: ready`、不是缩略图、SHA-256 对得上的原图；HEIC 转成 PNG，尺寸不变。缩略图和 `missing` 记为“原图缺失”（终态）；`pending` 继续等，超过 `image_pending_grace_seconds` 也记为缺失。
+   - `prepare-images`：从导出里挑出窗口内的图片消息。只用 `status: ready`、不是缩略图、SHA-256 对得上的原图；HEIC 和微信私有的 WXGF（HEVC，用 ffmpeg 解码）转成 PNG，尺寸不变。缩略图和 `missing` 记为“原图缺失”（终态）；`pending` 继续等，超过 `image_pending_grace_seconds` 也记为缺失。
    - `web_context`：从文本和 `link.url` 里收集链接，限时、限大小抓取正文，拒绝内网地址、凭证 URL 和跳转到内网。
    - `caption-images`：图片描述。模型拒答（`refusal`/`content_filter`）是终态，报告照出并标注“模型拒绝描述”。
    - `ocr_images`：可选 OCR（镜像没装 OCR 时记为不可用，不等待）。

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 from PIL import Image
@@ -26,13 +27,34 @@ def source_image_format(data):
             if name == "webp" and data[8:12] != b"WEBP":
                 return None
             return name
+    if data.startswith(b"wxgf"):  # WeChat's own HEVC container, exported as is
+        return "hevc"
     if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in {b"heic", b"heix", b"hevc", b"hevx", b"mif1"}:
         return "heic"
     return None
 
 
+def decode_wxgf(data):
+    """First frame of a WXGF image as PNG. Every failure is a ValueError, so one bad image never stops the stage."""
+    offset = data.find(b"\x00\x00\x00\x01\x40\x01")
+    if offset < 0:
+        raise ValueError("WXGF image has no HEVC video parameter set")
+    try:
+        decoded = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "hevc", "-i", "pipe:0",
+             "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1"],
+            input=data[offset:], capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"WXGF image could not be decoded: {type(exc).__name__}") from exc
+    if decoded.returncode or not decoded.stdout:
+        raise ValueError("WXGF image could not be decoded by ffmpeg")
+    return decoded.stdout
+
+
 def model_image(data, fmt):
-    if fmt == "heic":
+    if fmt == "hevc":
+        data, fmt = decode_wxgf(data), "png"
+    elif fmt == "heic":
         from PIL import ImageOps
         from pillow_heif import register_heif_opener
         register_heif_opener()
@@ -159,7 +181,7 @@ def prepare(export_root, conversation_id, start, end, runtime_dir, *, pending_gr
                 item.update(available=True, image_path=str(model_path), dimensions=list(dimensions), source_quality=quality,
                             sha256=hashlib.sha256(data).hexdigest(),
                             provenance={"source": "chat-export", "source_format": source_format, "source_bytes": len(payload),
-                                        "source_sha256": media["sha256"], "converted_without_resizing": source_format == "heic"})
+                                        "source_sha256": media["sha256"], "converted_without_resizing": source_format in {"hevc", "heic"}})
                 prepared_cache[uid] = {"inputs": inputs, "output": file_signature(Path(item["image_path"])), "item": item}
             except (OSError, ValueError, chat_export.ExportError) as exc:
                 item.update(source_quality="missing", terminal=True, reason=f"exported image could not be used: {type(exc).__name__}")
