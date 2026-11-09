@@ -53,9 +53,14 @@ def _set_owner(path: Path, uid: int, gid: int) -> None:
 def init_runtime() -> None:
     runtime = settings.RUNTIME
     # Use project.json's worker user when it exists, so re-running init after setting worker_uid fixes ownership.
-    configured = settings.load_project() if (runtime / "project.json").exists() else settings.DEFAULTS
+    first_run = not (runtime / "project.json").exists()
+    configured = settings.DEFAULTS if first_run else settings.load_project()
     worker_uid = int(configured["worker_uid"])
     worker_gid = int(configured["worker_gid"])
+    if first_run and os.geteuid() != 0:
+        # An unprivileged first run cannot hand files to another user; it is the worker itself
+        # (docs/INSTALL.md creates a dedicated system user, whose UID is rarely the default).
+        worker_uid, worker_gid = os.geteuid(), os.getegid()
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(runtime, 0o700)
     _set_owner(runtime, worker_uid, worker_gid)
@@ -71,7 +76,9 @@ def init_runtime() -> None:
         example = settings.ROOT / "examples" / "project.example.json"
         if not example.is_file():
             raise RuntimeError(f"Configuration template is missing: {example}")
-        project.write_bytes(example.read_bytes())
+        template = json.loads(example.read_text(encoding="utf-8"))
+        template.update(worker_uid=worker_uid, worker_gid=worker_gid)
+        project.write_text(json.dumps(template, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.chmod(project, 0o600)
         _set_owner(project, worker_uid, worker_gid)
         created = True
@@ -81,8 +88,13 @@ def init_runtime() -> None:
             os.chown(project, worker_uid, worker_gid)
         project.chmod(0o600)
         _set_owner(project, worker_uid, worker_gid)
-    print(json.dumps({"status": "initialized", "config_created": created, "runtime": str(runtime), "config": str(project),
-                      "next": "set export.root, group.conversation_id/name and send in runtime/project.json, build the runtime image, then run bootstrap --pin-images"}, ensure_ascii=False))
+    import local_site
+    site = local_site.init_config(runtime / local_site.CONFIG_NAME, owner=(worker_uid, worker_gid))
+    result = {"status": "initialized", "config_created": created, "runtime": str(runtime), "config": str(project),
+              "next": "set export.root, group.conversation_id/name and send in runtime/project.json, build the runtime image, then run bootstrap --pin-images"}
+    if site:
+        result["report_site"] = {**site, "note": "shown only once; start the site with ./bin/chat-digest site --serve"}
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def _configured_images(config: dict) -> dict[str, str]:

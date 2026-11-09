@@ -1,13 +1,20 @@
-"""Independent HTML and Pillow renderer for public daily reports."""
+"""Bundled report renderer: one lavender, type-led design for the PNG and the HTML page.
+
+Clean-room implementation: only the look of an earlier renderer (synthetic screenshots and a
+written description) was used as a reference, never its code. See THIRD_PARTY_NOTICES.md.
+"""
 from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
+import math
 import os
 import re
 import sys
 from datetime import datetime
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 
@@ -19,23 +26,62 @@ except ImportError:  # direct script execution
 try:
     from timezones import project_zone
 except ImportError:  # the deployment directory is not on sys.path
-    import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'deployment'))
     from timezones import project_zone
 
 DISPLAY_TZ = project_zone('Asia/Shanghai')
+DEFAULT_TITLE = '群聊日报'
+TOPIC_AVATAR_LIMIT = 8
 
-RHYTHM_CHART_CSS = """
-.rhythm-chart{width:100%;height:auto;display:block}.rhythm-chart .grid{stroke:#e6eaf0;stroke-width:1}
-.rhythm-chart .axis{stroke:#aab4c1;stroke-width:1}.rhythm-chart .line{fill:none;stroke:#5879d8;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}
-.rhythm-chart .rhythm-point{fill:#fff;stroke:#5879d8;stroke-width:2}.rhythm-chart text{font:12px sans-serif;fill:#687386}.rhythm-chart .axis-hour{fill:#fff;stroke:#aab4c1;stroke-width:1}
+# One palette for both outputs. DEEP and MUTED pass WCAG AA for body text on white;
+# ACCENT_TEXT passes AA for large text; ACCENT is for lines and decoration only.
+INK = '#2B2833'
+BODY = '#55515E'
+MUTED = '#6F6A7A'
+LINE = '#E6E3EE'
+ACCENT = '#B8A9E8'
+ACCENT_TEXT = '#8672D1'
+DEEP = '#5F4DA8'
+SOFT = '#EFEBFA'
+PAPER = '#FFFFFF'
+FONT_STACK = "DigestCJK,'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif"
+
+RHYTHM_CHART_CSS = f"""
+.rhythm-chart{{width:100%;max-width:600px;height:auto;display:block}}.rhythm-chart .grid{{stroke:{LINE};stroke-width:1}}
+.rhythm-chart .axis{{stroke:{LINE};stroke-width:1}}.rhythm-chart .line{{fill:none;stroke:{ACCENT};stroke-width:2;stroke-linejoin:round;stroke-linecap:round}}
+.rhythm-chart .rhythm-point{{fill:{ACCENT}}}.rhythm-chart .peak{{fill:{DEEP}}}.rhythm-chart text{{font:15px {FONT_STACK};fill:{MUTED}}}.rhythm-chart .axis-hour{{fill:{ACCENT}}}
 """
-SOURCE_MESSAGES_CSS = """
- .avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;background:#e8edf5;flex:none}.avatar-fallback{display:grid;place-items:center;color:#526078;font-size:13px}.source-body{min-width:0;flex:1}.source-meta{color:#7b8492;font-size:12px;margin-bottom:5px}.source-author{font-weight:650;color:#303947}.source-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;color:#384252;margin:0}.source-quote{margin:8px 0 0;padding:9px 12px;border-radius:9px;background:#f0f1f3;color:#68717c}.source-image{display:block;max-width:min(100%,420px);max-height:360px;object-fit:contain;margin:8px 0;border-radius:8px}.source-unavailable{color:#8992a0;font-size:12px}.sources{list-style:none;padding:0;margin:12px 0;display:grid;gap:12px}.source{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid #e8ebf0;border-radius:12px;background:#fff}.lede{font-size:18px;line-height:1.7}.topic{padding:14px 0;border-bottom:1px solid #edf0f4}.topic h3{margin:0 0 8px}.topic-summary,.topic-details{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.rank-list{padding-left:26px}.rank-list li{padding:7px 2px}.rank-list strong{float:right}details>summary{cursor:pointer;color:#5879d8}
- .source-body>b{display:block;font-weight:650;color:#303947}.source-meta{margin:3px 0 6px;color:#7b8492;font-size:12px}.source-gallery{display:flex;flex-wrap:wrap;gap:8px}.source-image-link{display:block}
- .rank{padding-left:26px}.rank li{padding:7px 2px}.rank strong{float:right}
- .chart{width:100%;overflow-x:auto}.topic-time{color:#7a8494;font-size:13px}.topic-summary,.summary{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.body-chinese-count{color:#7a8494;font-size:13px}
+SOURCE_MESSAGES_CSS = f"""
+ .avatar{{width:32px;height:32px;border-radius:50%;object-fit:cover;background:{SOFT};flex:none}}.avatar-fallback{{display:inline-grid;place-items:center;color:{DEEP};font-size:13px;font-weight:700}}
+ .sources{{list-style:none;padding:0;margin:10px 0 0}}.source{{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-top:1px solid {LINE}}}.source-body{{min-width:0;flex:1}}
+ .source-body>b{{display:block;font-weight:700;font-size:14px;color:{INK}}}.source-meta{{margin:1px 0 4px;color:{MUTED};font-size:13px}}.source-text{{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;color:{BODY};margin:0;font-size:15px}}
+ .source-quote{{margin:8px 0 0;padding:0 0 0 12px;border-left:2px solid {ACCENT};color:{MUTED}}}.source-quote p{{margin:0;font-size:14px;overflow-wrap:anywhere}}
+ .source-gallery{{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}}.source-image-link{{display:block}}.source-image{{display:block;max-width:min(100%,420px);max-height:360px;object-fit:contain;border-radius:6px}}.source-unavailable{{color:{MUTED};font-size:13px}}
+ details>summary{{cursor:pointer;color:{DEEP};font-size:14px}}
 """
+PAGE_CSS = f"""
+*{{box-sizing:border-box}}body.digest-v2{{margin:0;background:{PAPER};color:{INK};font:17px/1.7 {FONT_STACK};-webkit-text-size-adjust:100%}}
+.digest-v2 .site-home{{max-width:680px;margin:0 auto;padding:16px 24px 0;font-size:14px}}.digest-v2 .page{{max-width:680px;margin:0 auto;padding:44px 24px 64px}}.digest-v2 a{{color:{DEEP};text-decoration-color:{ACCENT};text-underline-offset:3px}}
+.digest-v2 .chat{{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;color:{DEEP};overflow-wrap:anywhere}}
+.digest-v2 h1{{font-size:40px;line-height:1.2;margin:8px 0 6px;overflow-wrap:anywhere}}.digest-v2 h1 .edition{{white-space:nowrap}}
+.digest-v2 .meta,.digest-v2 .body-chinese-count{{margin:0;color:{MUTED};font-size:14px}}.digest-v2 .rule{{width:56px;height:2px;background:{ACCENT};margin:24px 0}}
+.digest-v2 .stats{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}}.digest-v2 .stat{{display:flex;flex-direction:column-reverse;justify-content:flex-end;min-width:0}}
+.digest-v2 .stat small{{color:{MUTED};font-size:13px}}.digest-v2 .stat b{{color:{DEEP};font-size:32px;line-height:1.15;overflow-wrap:anywhere}}.digest-v2 .stat b.peak{{font-size:22px;line-height:1.7}}.digest-v2 .stat .unit{{font-size:13px;font-weight:400;margin-left:3px;color:{MUTED}}}
+.digest-v2 .lede{{font-size:21px;line-height:1.65;margin:32px 0 0;overflow-wrap:anywhere}}.digest-v2 h2{{font-size:17px;color:{DEEP};margin:40px 0 12px}}
+.digest-v2 .toc ol{{margin:0;padding-left:26px;font-size:15px}}.digest-v2 .toc li{{padding:2px 0}}.digest-v2 .toc li::marker{{color:{MUTED}}}
+.digest-v2 .topic{{position:relative;border-top:1px solid {LINE};padding:20px 0}}.digest-v2 .topic h3{{font-size:21px;line-height:1.35;margin:0;overflow-wrap:anywhere}}.digest-v2 .topic h3 span{{color:{ACCENT_TEXT};margin-right:10px}}
+.digest-v2 .topic-time{{margin:2px 0 6px;color:{MUTED};font-size:14px}}.digest-v2 .topic-summary,.digest-v2 .summary{{margin:6px 0 0;color:{BODY};white-space:pre-wrap;overflow-wrap:anywhere}}
+.digest-v2 .topic-details{{margin:8px 0 0;padding-left:20px;color:{BODY};font-size:16px}}.digest-v2 .topic-details li{{padding:2px 0;overflow-wrap:anywhere}}.digest-v2 .topic-details li::marker{{color:{ACCENT}}}
+.digest-v2 .people{{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;color:{MUTED};font-size:13px}}.digest-v2 .people .avatar{{width:26px;height:26px;font-size:11px}}.digest-v2 .topic details{{margin-top:10px}}
+.digest-v2 blockquote{{position:relative;margin:18px 0 0;padding-left:34px}}.digest-v2 blockquote::before{{content:'“';position:absolute;right:calc(100% - 28px);top:-6px;font-size:52px;line-height:1;font-weight:700;color:{ACCENT}}}
+.digest-v2 blockquote p{{margin:0;font-size:20px;line-height:1.55;overflow-wrap:anywhere}}.digest-v2 blockquote footer{{margin-top:4px;color:{MUTED};font-size:14px}}.digest-v2 blockquote details{{margin-top:2px}}
+.digest-v2 .rank{{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 28px;counter-reset:rank}}.digest-v2 .rank li{{display:flex;align-items:center;gap:10px;min-width:0;padding:5px 0;counter-increment:rank}}
+.digest-v2 .rank li::before{{content:counter(rank,decimal-leading-zero);width:20px;flex:none;color:{MUTED};font-size:13px}}.digest-v2 .rank-name{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.digest-v2 .rank strong{{flex:none;font-weight:400;font-size:14px;color:{DEEP}}}
+.digest-v2 .generated{{margin-top:44px;padding-top:14px;border-top:1px solid {LINE};color:{MUTED};font-size:13px}}
+@media(min-width:600px){{.digest-v2 .topic h3{{padding-right:128px}}.digest-v2 .topic-time{{position:absolute;right:0;top:22px;margin:0}}}}
+@media(max-width:599px){{body.digest-v2{{font-size:16px}}.digest-v2 .page{{padding:28px 16px 48px}}.digest-v2 h1{{font-size:32px}}.digest-v2 .stats{{grid-template-columns:repeat(2,minmax(0,1fr))}}.digest-v2 .lede{{font-size:19px}}.digest-v2 .rank{{grid-template-columns:minmax(0,1fr)}}}}
+"""
+CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
 
 
 def _report_timezone(report=None):
@@ -86,7 +132,7 @@ def rounded_webfont_css():
     """Inline the configured or bundled full CJK webfont for portable HTML."""
     regular = _font_candidates()
     bundled = Path(__file__).resolve().parent.parent / 'assets' / 'fonts'
-    bold = [bundled / 'ResourceHanRoundedCN-Bold.ttf', bundled / 'ResourceHanRoundedCN-Bold.woff2']
+    bold = [bundled / 'ResourceHanRoundedCN-Bold.woff2', bundled / 'ResourceHanRoundedCN-Bold.ttf']
     declarations = []
     for weight, candidates in ((400, regular), (700, bold)):
         for candidate in candidates:
@@ -112,6 +158,12 @@ def font_path():
     raise RuntimeError('No CJK font found. Set CHAT_DIGEST_FONT to an installed Pillow-compatible .ttf/.ttc/.otf font.')
 
 
+def bold_font_path():
+    """The bundled bold face, unless the deployment chose its own font."""
+    bundled = Path(__file__).resolve().parent.parent / 'assets' / 'fonts' / 'ResourceHanRoundedCN-Bold.ttf'
+    return bundled if not os.environ.get('CHAT_DIGEST_FONT') and bundled.is_file() else font_path()
+
+
 def build_rhythm_buckets(timestamps, start, end):
     start, end = int(start), int(end)
     if end <= start:
@@ -135,52 +187,57 @@ def build_rhythm_buckets(timestamps, start, end):
     return buckets
 
 
+def _bucket_count(bucket):
+    try:
+        return max(0, int(bucket.get('count', 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _axis_bounds(values):
+    start = int(values[0].get('start_unix', 0))
+    end = int(values[-1].get('end_unix_exclusive', start + len(values) * 600))
+    return start, max(end, start + 1)
+
+
 def _rhythm_svg(report):
     timezone = _report_timezone(report)
     values = report.get('rhythm_buckets') or []
-    width, height, left, right, top, bottom = 900, 290, 58, 20, 20, 55
-    plot_w, plot_h = width-left-right, height-top-bottom
-    n = len(values)
-    max_value = max([int(x.get('count', 0) or 0) for x in values] or [0])
-    y_max = max(1, max_value)
-    y = lambda v: top + plot_h * (1 - v/y_max)
-    axis_start = int(values[0].get('start_unix', 0)) if values else 0
-    axis_end = int(values[-1].get('end_unix_exclusive', axis_start + len(values)*600)) if values else 0
-    duration = max(axis_end-axis_start, 1)
-    x_at = lambda stamp: left + plot_w * (float(stamp)-axis_start) / duration
-    lines = [f'<svg class="rhythm-chart" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-label="消息节奏">']
-    ticks = sorted({int(round(y_max * tick / 4)) for tick in range(5)})
-    for v in ticks:
+    width, height, left, right, top, bottom = 520, 170, 30, 8, 12, 48
+    plot_w, plot_h = width - left - right, height - top - bottom
+    counts = [_bucket_count(item) for item in values]
+    y_max = max(1, max(counts or [0]))
+    y = lambda v: top + plot_h * (1 - v / y_max)
+    parts = [f'<svg class="rhythm-chart" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-label="消息节奏">']
+    for v in sorted({0, y_max // 2, y_max}):
         yy = y(v)
-        lines.append(f'<line class="grid" x1="{left}" y1="{yy:.2f}" x2="{width-right}" y2="{yy:.2f}"/><text x="{left-10}" y="{yy+4:.2f}" text-anchor="end">{v}</text>')
-    points = [(x_at(item.get('start_unix', axis_start)), y(int(item.get('count', 0) or 0))) for item in values]
-    lines.append(f'<line class="axis" x1="{left}" y1="{top}" x2="{left}" y2="{height-bottom}"/><line class="axis" x1="{left}" y1="{height-bottom}" x2="{width-right}" y2="{height-bottom}"/>')
-    # Hourly ticks are drawn at their actual times below; bucket points stay on the curve.
-    if points:
-        point_str = ' '.join(f'{px:.2f},{py:.2f}' for px, py in points)
-        lines.append(f'<polyline class="line" points="{point_str}"/>')
-        for px, py in points:
-            lines.append(f'<circle class="rhythm-point" cx="{px:.2f}" cy="{py:.2f}" r="3.5"/>')
-    if values:
-        first_ts = values[0].get('start_unix')
-        last_ts = values[-1].get('end_unix_exclusive', values[-1].get('start_unix'))
-        if first_ts is not None:
-            lines.append(f'<text x="{left}" y="{height-16}" text-anchor="start">{escape(time_text(first_ts, "%Y-%m-%d", timezone))}</text>')
-        if last_ts is not None:
-            lines.append(f'<text x="{width-right}" y="{height-16}" text-anchor="end">{escape(time_text(last_ts, "%Y-%m-%d", timezone))}</text>')
-        # Hour labels and ticks are placed on the actual time axis, including clipped bins.
-        hour = ((axis_start + 3599) // 3600) * 3600
-        while hour <= axis_end:
-            ratio = (hour-axis_start) / max(axis_end-axis_start, 1)
-            px = left + plot_w * ratio
-            if 0 <= px <= width:
-                lines.append(f'<circle class="axis-hour" cx="{px:.2f}" cy="{height-bottom}" r="2"/>')
-                local = datetime.fromtimestamp(hour, timezone)
-                if local.minute == 0 and local.hour % 2 == 0:
-                    lines.append(f'<text class="chart-hour" x="{px:.2f}" y="{height-bottom+22}" text-anchor="middle">{local:%H}</text>')
-            hour += 3600
-    lines.append('</svg>')
-    return ''.join(lines)
+        parts.append(f'<line class="grid" x1="{left}" y1="{yy:.2f}" x2="{width-right}" y2="{yy:.2f}"/><text x="{left-8}" y="{yy+5:.2f}" text-anchor="end">{v}</text>')
+    if not values:
+        parts.append('</svg>')
+        return ''.join(parts)
+    axis_start, axis_end = _axis_bounds(values)
+    duration = axis_end - axis_start
+    x_at = lambda stamp: left + plot_w * (float(stamp) - axis_start) / duration
+    points = [(x_at(item.get('start_unix', axis_start)), y(count)) for item, count in zip(values, counts)]
+    parts.append('<polyline class="line" points="' + ' '.join(f'{px:.2f},{py:.2f}' for px, py in points) + '"/>')
+    peak = max(counts)
+    for (px, py), count in zip(points, counts):
+        parts.append(f'<circle class="rhythm-point" cx="{px:.2f}" cy="{py:.2f}" r="{1.8 if count else 0}"/>')
+    if peak:
+        px, py = points[counts.index(peak)]
+        parts.append(f'<circle class="peak" cx="{px:.2f}" cy="{py:.2f}" r="3.5"/>')
+    hour = ((axis_start + 3599) // 3600) * 3600
+    while hour <= axis_end:
+        px = x_at(hour)
+        parts.append(f'<circle class="axis-hour" cx="{px:.2f}" cy="{height-bottom}" r="1.2"/>')
+        local = datetime.fromtimestamp(hour, timezone)
+        if local.minute == 0 and local.hour % 2 == 0:
+            parts.append(f'<text class="chart-hour" x="{px:.2f}" y="{height-bottom+18}" text-anchor="middle">{local:%H}</text>')
+        hour += 3600
+    parts.append(f'<text x="{left}" y="{height-6}" text-anchor="start">{escape(time_text(axis_start, "%Y-%m-%d", timezone))}</text>')
+    parts.append(f'<text x="{width-right}" y="{height-6}" text-anchor="end">{escape(time_text(axis_end, "%Y-%m-%d", timezone))}</text>')
+    parts.append('</svg>')
+    return ''.join(parts)
 
 
 def rhythm_chart_contents(report):
@@ -197,6 +254,10 @@ def _safe_asset(value):
     return ''
 
 
+def _initial(name):
+    return next((char for char in str(name or '') if not char.isspace()), '？')
+
+
 def _avatar_html(author_id, author, avatars):
     avatar = (avatars or {}).get(str(author_id or ''), {})
     src = ''
@@ -204,8 +265,7 @@ def _avatar_html(author_id, author, avatars):
         src = _safe_asset(avatar.get('asset_src')) or _safe_asset(avatar.get('data_uri'))
     if src:
         return f"<img class='avatar source-avatar' src='{escape(src, quote=True)}' alt='' loading='lazy'>"
-    initials = ''.join(str(author).split()[:1])[:2] or '？'
-    return f"<span class='avatar avatar-fallback' aria-label='{escape(str(author), quote=True)}'>{escape(initials)}</span>"
+    return f"<span class='avatar avatar-fallback' aria-label='{escape(str(author), quote=True)}'>{escape(_initial(author))}</span>"
 
 
 def _quote_source(quote):
@@ -273,241 +333,519 @@ def _topic_refs(topic):
     return topic.get('references') if isinstance(topic.get('references'), list) else []
 
 
+def _row_identity(row):
+    return (row.get('username') or row.get('id') or row.get('participant_id') or row.get('account_id')
+            or row.get('user_id') or row.get('author_id') or row.get('speaker_id') or '')
+
+
+def _row_name(row):
+    return str(row.get('name') or row.get('display_name') or row.get('author') or '未知成员')
+
+
 def ranked_participants(report):
     rows = report.get('participants') or report.get('active_rank') or []
     def order(row):
         value = row.get('tokens', row.get('count', row.get('messages', 0))) or 0
-        identity = row.get('username') or row.get('id') or row.get('participant_id') or row.get('account_id') or row.get('user_id') or row.get('author_id') or row.get('speaker_id') or ''
-        return -int(value), str(identity)
+        return -int(value), str(_row_identity(row))
     return sorted(rows, key=order)[:20]
 
 
 def rank_value(row):
-    return int(row.get('tokens', row.get('count', row.get('messages', 0))) or 0), ('tokens' if 'tokens' in row else '条')
+    return int(row.get('tokens', row.get('count', row.get('messages', 0))) or 0), ('token' if 'tokens' in row else '条')
 
 
 def rank_rows_html(report):
     avatars = report.get('avatars') or {}
     result = []
     for row in ranked_participants(report):
-        name = str(row.get('name') or row.get('display_name') or row.get('author') or '未知成员')
-        identity = row.get('username') or row.get('id') or row.get('participant_id') or row.get('account_id') or row.get('user_id') or row.get('author_id') or row.get('speaker_id')
+        name = _row_name(row)
         value, unit = rank_value(row)
-        result.append(f"<li>{_avatar_html(identity, name, avatars)}<span class='rank-name'>{escape(name)}</span><strong>{escape(str(value))} {escape(unit)}</strong></li>")
+        result.append(f"<li>{_avatar_html(_row_identity(row), name, avatars)}<span class='rank-name'>{escape(name)}</span><strong>{escape(str(value))} {escape(unit)}</strong></li>")
     return ''.join(result)
+
+
+def report_title(report):
+    """The title part before the edition: report data first, then a neutral configurable default."""
+    return str(report.get('title_prefix') or report.get('report_kind')
+               or os.environ.get('CHAT_DIGEST_REPORT_TITLE') or DEFAULT_TITLE)
+
+
+def _edition_label(report):
+    return '简报' if report.get('edition') == 'brief' else '回顾'
+
+
+def _chat_name(report):
+    return str(report.get('chat_display') or report.get('chat_username') or '聊天日报')
+
+
+def _generated_text(report, timezone):
+    raw = str(report.get('generated_at') or '')
+    try:
+        moment = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except ValueError:
+        return raw
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone)
+    return moment.strftime('%Y.%m.%d %H:%M')
+
+
+def _stat_cells(report):
+    """(label, value, unit) in display order; a missing number stays visibly missing."""
+    stats = report.get('stats') if isinstance(report.get('stats'), dict) else {}
+    def number(key):
+        return str(stats[key]) if stats.get(key) is not None else '—'
+    return [('消息总量', number('messages'), '条'), ('参与成员', number('members'), '人'),
+            ('高峰时段', peak_time_text(report), ''), ('讨论话题', str(len(report.get('topics') or [])), '个')]
+
+
+def _quotes(report):
+    return [quote for quote in report.get('quotes') or [] if isinstance(quote, dict) and quote.get('text')]
+
+
+def _people_names(report):
+    names = {}
+    for row in [*(report.get('active_rank') or []), *(report.get('participants') or [])]:
+        names.setdefault(str(_row_identity(row)), _row_name(row))
+    return names
+
+
+def _topic_people(topic, names):
+    """Unique (id, name) pairs for a topic, falling back to the authors it cites."""
+    people = {}
+    for identity in topic.get('participant_ids') or []:
+        people.setdefault(str(identity), names.get(str(identity), '群友'))
+    if not people:
+        for ref in _topic_refs(topic):
+            if isinstance(ref, dict) and ref.get('author_id'):
+                people.setdefault(str(ref['author_id']), str(ref.get('author') or '群友'))
+    return list(people.items())
+
+
+def _topic_html(index, topic, report, names, timezone):
+    avatars = report.get('avatars') or {}
+    parts = [f'<article class="topic" id="topic-{index}"><h3><span>{index:02}</span>'
+             + escape(str(topic.get('topic') or '未命名话题')) + '</h3>']
+    time_range = topic_time_range(topic, timezone)
+    if time_range:
+        parts.append(f'<p class="topic-time">{escape(time_range)}</p>')
+    if topic.get('summary'):
+        parts.append(f'<p class="topic-summary summary">{escape(str(topic["summary"]))}</p>')
+    details = topic.get('details')
+    details = details if isinstance(details, list) else [details] if details else []
+    if details:
+        parts.append('<ul class="topic-details details">' + ''.join(f'<li>{escape(str(item))}</li>' for item in details) + '</ul>')
+    people = _topic_people(topic, names) if report.get('edition') != 'brief' else []
+    if people:
+        shown = ''.join(_avatar_html(identity, name, avatars) for identity, name in people[:TOPIC_AVATAR_LIMIT])
+        extra = f'<span>+{len(people) - TOPIC_AVATAR_LIMIT}</span>' if len(people) > TOPIC_AVATAR_LIMIT else ''
+        parts.append(f'<div class="people">{shown}{extra}</div>')
+    refs = _topic_refs(topic)
+    if refs:
+        label = f'来源 · {len(refs)} 条消息' + (f' · {time_range}' if time_range else '')
+        parts.append(f'<details><summary>{escape(label)}</summary><ul class="sources">'
+                     + source_messages_html(refs, avatars, timezone) + '</ul></details>')
+    parts.append('</article>')
+    return ''.join(parts)
+
+
+def _quote_html(quote, report, timezone):
+    avatars = report.get('avatars') or {}
+    source = _quote_source(quote)
+    speaker = str(quote.get('speaker') or source.get('author') or '群友')
+    when = quote.get('time') or source.get('time')
+    if not when and source.get('timestamp') is not None:
+        when = time_text(source.get('timestamp'), '%m.%d %H:%M', timezone)
+    footer = escape(speaker) + (f' · {escape(str(when))}' if when else '')
+    if source.get('text') or source.get('image_src') or source.get('image_sources'):
+        footer += '<details><summary>查看来源</summary><ul class="sources">' + source_messages_html([source], avatars, timezone) + '</ul></details>'
+    return '<blockquote><p>' + escape(str(quote['text'])) + '</p><footer>' + footer + '</footer></blockquote>'
 
 
 def render_html(report):
     timezone = _report_timezone(report)
-    edition = 'brief' if report.get('edition') == 'brief' else 'review'
-    base_title = str(report.get('report_kind') or '群聊日报')
-    title = str(report.get('title_prefix') or base_title) + (' · 简报' if edition == 'brief' else ' · 回顾')
-    chat = report.get('chat_display') or report.get('chat_username') or '聊天日报'
-    topics = report.get('topics') or []
-    avatars = report.get('avatars') or {}
-    parts = ["<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>",
-             escape(title), ' · ', escape(str(chat)), '</title><style>', rounded_webfont_css(),
-             "body{margin:0;background:#f4f6fa;color:#273142;font-family:DigestCJK,'Noto Sans CJK SC',sans-serif}.page{max-width:900px;margin:32px auto;padding:0 22px}.hero,.card{background:#fff;border-radius:18px;padding:24px;margin-bottom:18px;box-shadow:0 3px 18px #25334a0a}.hero h1{margin:0 0 8px}.muted{color:#7a8494}.stats{display:flex;gap:12px;flex-wrap:wrap}.stat{padding:12px 16px;background:#f3f5f9;border-radius:12px}.topic{padding:14px 0;border-bottom:1px solid #edf0f4}.topic:last-child{border:0}.detail{white-space:pre-wrap;line-height:1.7}.rank-list{padding-left:26px}.rank-list li{padding:7px 2px}.rank-list strong{float:right}.brief-count{color:#7a8494;font-size:13px}h2{font-size:19px;margin-top:0}a{color:#5879d8}",
-             RHYTHM_CHART_CSS, SOURCE_MESSAGES_CSS,
-             '</style></head><body><main class="page"><header class="hero"><h1>', escape(title),
-             '</h1><div>', escape(str(chat)), '</div><p class="muted">',
-             escape(str(report.get('range_text') or report.get('day') or '')),
-             '</p><p class="muted">生成时间：', escape(str(report.get('generated_at') or '')), '</p></header>']
-    stats = report.get('stats') or {}
-    labels = [('messages', '消息总量'), ('members', '活跃成员'), ('groups', '话题数')]
-    parts.append('<section class="card"><h2>今日概览</h2><div class="stats">')
-    for key, label in labels:
-        if key in stats:
-            parts.append(f'<div class="stat"><span>{label}</span> <strong>{escape(str(stats[key]))}</strong></div>')
-    parts.append('</div>')
+    prefix, edition, chat = report_title(report), _edition_label(report), _chat_name(report)
+    topics = [topic for topic in report.get('topics') or [] if isinstance(topic, dict)]
+    names = _people_names(report)
+    parts = ["<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
+             f'<meta http-equiv="Content-Security-Policy" content="{CONTENT_SECURITY_POLICY}"><title>',
+             escape(f'{prefix} · {edition} · {chat}'), '</title><style>', rounded_webfont_css(),
+             PAGE_CSS, RHYTHM_CHART_CSS, SOURCE_MESSAGES_CSS,
+             '</style></head><body class="digest-v2"><main class="page"><header class="hero"><div class="chat">',
+             f"<span class='avatar avatar-fallback' aria-hidden='true'>{escape(_initial(chat))}</span><span>{escape(chat)}</span></div>",
+             f'<h1>{escape(prefix)} <span class="edition">· {edition}</span></h1>',
+             '<p class="meta">', escape(str(report.get('range_text') or report.get('day') or '')), '</p>',
+             f'<p class="body-chinese-count muted">正文共 {body_chinese_count(report)} 字（仅计中文）</p></header><div class="rule"></div><section class="stats" aria-label="统计">']
+    for label, value, unit in _stat_cells(report):
+        peak = ' class="peak"' if label == '高峰时段' else ''
+        unit_html = f'<span class="unit">{unit}</span>' if unit else ''
+        parts.append(f'<div class="stat"><small>{label}</small><b{peak}>{escape(value)}{unit_html}</b></div>')
+    parts.append('</section>')
     if report.get('one_line'):
         parts.append(f'<p class="lede">{escape(str(report["one_line"]))}</p>')
-    if report.get('leaders', {}).get('peak'):
-        peak = report['leaders']['peak']
-        parts.append(f'<p>消息峰值：{escape(peak_time_text(report))}（{escape(str(peak.get("count", 0)))}条）</p>')
-    parts.append(f'<p class="body-chinese-count">正文汉字：{body_chinese_count(report)}</p></section><section class="card"><h2>消息节奏</h2><div class="chart">{rhythm_chart_contents(report)}</div></section><section class="card"><h2>话题摘要</h2>')
-    for topic_index, topic in enumerate(topics, 1):
-        parts.append(f'<article class="topic" id="topic-{topic_index}"><h3>' + escape(str(topic.get('topic') or '未命名话题')) + '</h3>')
-        time_range = topic_time_range(topic, timezone)
-        if time_range:
-            parts.append(f'<div class="topic-time">{escape(time_range)}</div>')
-        if topic.get('summary'):
-            parts.append(f'<p class="topic-summary summary">{escape(str(topic["summary"]))}</p>')
-        details = topic.get('details')
-        if isinstance(details, list) and details:
-            parts.append('<ul class="topic-details details">')
-            for detail in details:
-                parts.append(f'<li>{escape(str(detail))}</li>')
-            parts.append('</ul>')
-        elif details:
-            parts.append(f'<ul class="topic-details details"><li>{escape(str(details))}</li></ul>')
-        refs = _topic_refs(topic)
-        if refs:
-            parts.append('<details><summary>查看来源</summary><ul class="sources">' + source_messages_html(refs, avatars, timezone) + '</ul></details>')
-        parts.append('</article>')
-    parts.append('</section>')
-    quotes = [q for q in report.get('quotes') or [] if q.get('text')]
+    if topics:
+        parts.append('<nav class="toc"><h2>话题目录</h2><ol>' + ''.join(
+            f'<li><a href="#topic-{index}">{escape(str(topic.get("topic") or "未命名话题"))}</a></li>'
+            for index, topic in enumerate(topics, 1)) + '</ol></nav>')
+    parts.append(f'<section><h2>消息节奏</h2><div class="chart">{rhythm_chart_contents(report)}</div></section>')
+    if topics:
+        parts.append('<section><h2>话题讨论</h2>' + ''.join(
+            _topic_html(index, topic, report, names, timezone) for index, topic in enumerate(topics, 1)) + '</section>')
+    quotes = _quotes(report)
     if quotes:
-        parts.append('<section class="card"><h2>群友金句</h2>')
-        for quote in quotes:
-            text = quote.get('text')
-            if not text:
-                continue
-            source = _quote_source(quote)
-            speaker = escape(str(quote.get('speaker') or source.get('author') or '群友'))
-            raw_time = quote.get('time') or source.get('time')
-            if not raw_time and source.get('timestamp') is not None:
-                raw_time = time_text(source.get('timestamp'), '%m.%d %H:%M', timezone)
-            when = escape(str(raw_time or ''))
-            footer = speaker + (f' · {when}' if when else '')
-            if source.get('text') or source.get('image_src') or source.get('image_sources'):
-                footer += '<details><summary>查看来源</summary><ul class="sources">' + source_messages_html([source], avatars, timezone) + '</ul></details>'
-            parts.append('<blockquote><p>' + escape(str(text)) + '</p><footer>' + footer + '</footer></blockquote>')
-        parts.append('</section>')
-    rank = ranked_participants(report)
-    if rank:
-        parts.append('<section class="card"><h2>活跃前20名</h2><ol class="rank">' + rank_rows_html(report) + '</ol></section>')
+        parts.append('<section><h2>群友金句</h2>' + ''.join(_quote_html(quote, report, timezone) for quote in quotes) + '</section>')
+    if ranked_participants(report):
+        parts.append('<section><h2>活跃前20名</h2><ol class="rank">' + rank_rows_html(report) + '</ol></section>')
+    generated = _generated_text(report, timezone)
+    if generated:
+        parts.append(f'<footer class="generated">生成于 {escape(generated)}</footer>')
     parts.append('</main></body></html>')
     return ''.join(parts)
 
 
-def _wrap_text(draw, text, font, max_width):
+# ---- PNG ---------------------------------------------------------------------------------------
+PNG_WIDTH = 1080
+PNG_MARGIN = 72
+_NO_LINE_START = set('，。！？、；：）》」』】〉”’…—～·.,!?;:)]}%')
+_NO_LINE_END = set('（《「『【〈“‘([{')
+_TOKEN = re.compile(r"[A-Za-z0-9_./:%+#@&'-]+|\s+|.", re.S)
+
+
+@lru_cache(maxsize=None)
+def _font(path, size):
+    from PIL import ImageFont
+    return ImageFont.truetype(str(path), size)
+
+
+@lru_cache(maxsize=None)
+def _glyph_available(path, char):
+    """Pillow cannot fall back between fonts, so glyphs the font lacks would print as empty boxes."""
+    font = _font(path, 32)
+    return bytes(font.getmask(char)) != bytes(font.getmask('\U0010FFFF'))
+
+
+def _printable(text, path):
+    return ''.join(char for char in str(text) if char.isspace() or (char.isprintable() and _glyph_available(path, char)))
+
+
+def _wrap_text(text, font, max_width):
+    """Greedy wrap: Latin words stay whole, CJK breaks anywhere, punctuation obeys line-start rules."""
     lines = []
     for paragraph in str(text).splitlines() or ['']:
         line = ''
-        for char in paragraph:
-            if line and draw.textlength(line + char, font=font) > max_width:
-                lines.append(line)
-                line = char
-            else:
-                line += char
-        lines.append(line)
+        for token in _TOKEN.findall(paragraph):
+            if not line and token.isspace():
+                continue
+            width = font.getlength(line + token)
+            # Closing punctuation may hang past the edge by about one character, not more: a run such as
+            # "——————" or "？？？？？？" would otherwise leave the canvas.
+            if width <= max_width or (token in _NO_LINE_START and line and width <= max_width + font.size):
+                line += token
+                continue
+            if font.getlength(token) > max_width:  # a single word wider than the line
+                for char in token:
+                    if line and font.getlength(line + char) > max_width:
+                        lines.append(line)
+                        line = ''
+                    line += char
+                continue
+            carry = ''
+            while line and line[-1] in _NO_LINE_END:
+                carry, line = line[-1] + carry, line[:-1]
+            if line:
+                lines.append(line.rstrip())
+            line = carry + ('' if token.isspace() else token)
+        lines.append(line.rstrip())
     return lines
+
+
+def _ellipsize(text, font, max_width):
+    text = str(text)
+    if font.getlength(text) <= max_width:
+        return text
+    while text and font.getlength(text + '…') > max_width:
+        text = text[:-1]
+    return text + '…'
+
+
+def _circle_mask(size):
+    from PIL import Image, ImageDraw
+    mask = Image.new('L', (size * 4, size * 4), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+    return mask.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def _decode_avatar(entry, size):
+    from PIL import Image, ImageOps
+    if not isinstance(entry, dict) or not entry.get('available'):
+        return None
+    uri = _safe_asset(entry.get('data_uri'))
+    if not uri.startswith('data:image/'):
+        return None
+    try:
+        with Image.open(io.BytesIO(base64.b64decode(uri.split(',', 1)[1], validate=True))) as source:
+            source.load()
+            return ImageOps.fit(ImageOps.exif_transpose(source).convert('RGB'), (size, size), Image.Resampling.LANCZOS)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
+
+
+class _PngPage:
+    """Lays the report out top to bottom, then draws once the exact height is known."""
+
+    def __init__(self, report):
+        self.report = report
+        self.timezone = _report_timezone(report)
+        self.regular, self.bold = font_path(), bold_font_path()
+        self.width = PNG_WIDTH
+        self.left, self.right = PNG_MARGIN, PNG_WIDTH - PNG_MARGIN
+        self.content = self.right - self.left
+        self.y = 64
+        self.ops = []
+
+    def face(self, size, bold=False):
+        return _font(self.bold if bold else self.regular, size)
+
+    def clean(self, text, bold=False):
+        return _printable(text, self.bold if bold else self.regular)
+
+    def visible_name(self, name):
+        """A nickname made only of characters the font lacks (often emoji) must not leave a blank."""
+        return self.clean(name).strip() or '群友'
+
+    def write(self, x, baseline, text, font, fill, anchor='ls'):
+        self.ops.append(lambda canvas, draw: draw.text((x, baseline), text, font=font, fill=fill, anchor=anchor))
+
+    def paragraph(self, text, size, fill, line_height, *, bold=False, x=None, width=None):
+        x = self.left if x is None else x
+        font = self.face(size, bold)
+        lines = _wrap_text(self.clean(text, bold), font, self.content if width is None else width)
+        for line in lines:
+            self.write(x, self.y + round(line_height * 0.76), line, font, fill)
+            self.y += line_height
+
+    def rule(self, x0, x1, y, fill=LINE, thickness=1):
+        self.ops.append(lambda canvas, draw: draw.rectangle((x0, y, x1, y + thickness - 1), fill=fill))
+
+    def avatar(self, x, y, size, identity, name):
+        entry = (self.report.get('avatars') or {}).get(str(identity or ''))
+        picture = _decode_avatar(entry, size)
+        if picture is not None:
+            self.ops.append(lambda canvas, draw: canvas.paste(picture, (x, y), _circle_mask(size)))
+            return
+        self.initial(x, y, size, name)
+
+    def initial(self, x, y, size, name):
+        from PIL import Image
+        font = self.face(round(size * 0.46), True)
+        letter = _initial(self.clean(name, True))
+        disc = Image.new('RGB', (size, size), SOFT)
+        def op(canvas, draw):
+            canvas.paste(disc, (x, y), _circle_mask(size))
+            draw.text((x + size / 2, y + size / 2), letter, font=font, fill=DEEP, anchor='mm')
+        self.ops.append(op)
+
+    def section(self, title, note=''):
+        self.y += 52
+        font = self.face(36, True)
+        self.write(self.left, self.y + 36, title, font, DEEP)
+        if note:
+            self.write(self.right, self.y + 36, note, self.face(27), MUTED, 'rs')
+        self.y += 66
+
+    def header(self):
+        chat = _chat_name(self.report)
+        self.initial(self.left, self.y, 52, chat)
+        name_font = self.face(31, True)
+        self.write(self.left + 68, self.y + 38, _ellipsize(self.clean(chat, True).strip() or '聊天日报', name_font, self.content - 68), name_font, DEEP)
+        self.y += 68
+        title = f'{report_title(self.report)} · {_edition_label(self.report)}'
+        size = next((candidate for candidate in (76, 68, 60) if self.face(candidate, True).getlength(self.clean(title, True)) <= self.content), 54)
+        self.paragraph(title, size, INK, round(size * 1.24), bold=True)
+        self.y += 8
+        meta = '　'.join(item for item in (str(self.report.get('range_text') or self.report.get('day') or ''),
+                                          f'正文共 {body_chinese_count(self.report)} 字') if item)
+        self.paragraph(meta, 29, MUTED, 42)
+        self.y += 34
+        self.rule(self.left, self.left + 95, self.y, ACCENT, 4)
+        self.y += 42
+
+    def stats(self):
+        cell = self.content / 4
+        for column, (label, value, _unit) in enumerate(_stat_cells(self.report)):
+            match = re.fullmatch(r'(\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2})', value) if label == '高峰时段' else None
+            if match:
+                label, value = f'{label} {match[1]}', match[2]
+            x = round(self.left + column * cell)
+            room = cell - 18
+            size = next((candidate for candidate in (64, 54, 44) if self.face(candidate, True).getlength(value) <= room), 34)
+            value_font = self.face(size, True)
+            self.write(x, self.y + 62, _ellipsize(self.clean(value, True), value_font, room), value_font, DEEP)
+            label_font = self.face(27)
+            self.write(x, self.y + 106, _ellipsize(label, label_font, room), label_font, MUTED)
+        self.y += 118
+
+    def one_line(self):
+        if self.report.get('one_line'):
+            self.y += 40
+            self.paragraph(self.report['one_line'], 42, INK, 66)
+
+    def rhythm(self):
+        values = self.report.get('rhythm_buckets') or []
+        if not values:
+            return
+        from PIL import Image, ImageDraw
+        counts = [_bucket_count(item) for item in values]
+        peak = max(counts)
+        seconds = self.report.get('rhythm_bucket_seconds') or 600
+        self.section('消息节奏', f'每 {max(1, int(seconds) // 60)} 分钟 · 最高 {peak} 条')
+        top, plot, scale = self.y, 150, 3
+        axis_start, axis_end = _axis_bounds(values)
+        duration = axis_end - axis_start
+        x_at = lambda stamp: self.content * (float(stamp) - axis_start) / duration
+        points = [(x_at(item.get('start_unix', axis_start)), plot - plot * count / max(peak, 1) + 6)
+                  for item, count in zip(values, counts)]
+        left, right = self.left, self.right
+        def op(canvas, draw):
+            layer = Image.new('RGBA', ((right - left + 8) * scale, (plot + 12) * scale), (255, 255, 255, 0))
+            pen = ImageDraw.Draw(layer)
+            scaled = [((px + 4) * scale, py * scale) for px, py in points]
+            if len(scaled) > 1:
+                pen.line(scaled, fill=ACCENT, width=3 * scale, joint='curve')
+            if peak:
+                px, py = scaled[counts.index(peak)]
+                pen.ellipse((px - 7 * scale, py - 7 * scale, px + 7 * scale, py + 7 * scale), fill=DEEP)
+            layer = layer.resize((right - left + 8, plot + 12), Image.Resampling.LANCZOS)
+            canvas.paste(layer, (left - 4, top), layer)
+        self.rule(self.left, self.right, top + plot + 6)
+        self.ops.append(op)
+        hour_font = self.face(26)
+        hour = ((axis_start + 3599) // 3600) * 3600
+        while hour <= axis_end:
+            local = datetime.fromtimestamp(hour, self.timezone)
+            if local.minute == 0 and local.hour % 2 == 0:
+                x = round(self.left + x_at(hour))
+                width = hour_font.getlength(f'{local:%H}')
+                x = min(max(x, self.left + round(width / 2)), self.right - round(width / 2))
+                self.write(x, top + plot + 44, f'{local:%H}', hour_font, MUTED, 'ms')
+            hour += 3600
+        self.y = top + plot + 56
+
+    def topics(self):
+        topics = [topic for topic in self.report.get('topics') or [] if isinstance(topic, dict)]
+        if not topics:
+            return
+        self.section('话题讨论')
+        names = _people_names(self.report)
+        for index, topic in enumerate(topics, 1):
+            self.rule(self.left, self.right, self.y)
+            self.y += 26
+            self.topic(index, topic, names)
+            self.y += 26
+
+    def topic(self, index, topic, names):
+        number_font, title_font, time_font = self.face(42, True), self.face(42, True), self.face(27)
+        number = f'{index:02}'
+        indent = 78
+        time_range = topic_time_range(topic, self.timezone)
+        title = self.clean(topic.get('topic') or '', True).strip() or '未命名话题'
+        self.write(self.left, self.y + 45, number, number_font, ACCENT_TEXT)
+        reserve = time_font.getlength(time_range) + 24 if time_range else 0
+        one_line = title_font.getlength(title) <= self.content - indent - reserve
+        if time_range and one_line:
+            self.write(self.right, self.y + 45, time_range, time_font, MUTED, 'rs')
+        self.paragraph(title, 42, INK, 60, bold=True, x=self.left + indent, width=self.content - indent)
+        if time_range and not one_line:
+            self.paragraph(time_range, 27, MUTED, 40, x=self.left + indent, width=self.content - indent)
+        if topic.get('summary'):
+            self.y += 4
+            self.paragraph(topic['summary'], 37, BODY, 56)
+        details = topic.get('details')
+        for detail in (details if isinstance(details, list) else [details] if details else []):
+            self.y += 6
+            dot_y = self.y + 24
+            self.ops.append(lambda canvas, draw, y=dot_y: draw.ellipse((self.left + 4, y - 5, self.left + 14, y + 5), fill=ACCENT))
+            self.paragraph(detail, 34, BODY, 50, x=self.left + 34, width=self.content - 34)
+        people = _topic_people(topic, names) if self.report.get('edition') != 'brief' else []
+        if people:
+            self.y += 14
+            x = self.left
+            for identity, name in people[:TOPIC_AVATAR_LIMIT]:
+                self.avatar(x, self.y, 44, identity, name)
+                x += 54
+            if len(people) > TOPIC_AVATAR_LIMIT:
+                self.write(x + 4, self.y + 32, f'+{len(people) - TOPIC_AVATAR_LIMIT}', self.face(27), MUTED)
+            self.y += 44
+
+    def quotes(self):
+        quotes = _quotes(self.report)
+        if not quotes:
+            return
+        self.section('群友金句')
+        mark = self.face(96, True)
+        for position, quote in enumerate(quotes):
+            if position:
+                self.y += 34
+            source = _quote_source(quote)
+            self.write(self.left + 50, self.y + 74, '”'.replace('”', '“'), mark, ACCENT, 'rs')  # CJK quote glyphs sit at the right of their cell
+            self.paragraph(quote['text'], 40, INK, 60, x=self.left + 60, width=self.content - 60)
+            self.y += 10
+            speaker = str(quote.get('speaker') or source.get('author') or '群友')
+            when = quote.get('time') or source.get('time')
+            if not when and source.get('timestamp') is not None:
+                when = time_text(source.get('timestamp'), '%m.%d %H:%M', self.timezone)
+            self.avatar(self.left + 60, self.y, 44, quote.get('speaker_id') or source.get('author_id'), speaker)
+            font = self.face(27)
+            line = self.visible_name(speaker) + self.clean(f' · {when}' if when else '')
+            self.write(self.left + 118, self.y + 32, _ellipsize(line, font, self.content - 118), font, MUTED)
+            self.y += 44
+
+    def rank(self):
+        rows = ranked_participants(self.report)
+        if not rows:
+            return
+        unit = rank_value(rows[0])[1]
+        self.section('活跃前20名', '按发言 token 数' if unit == 'token' else f'按发言{unit}数')
+        gap = 48
+        cell = (self.content - gap) // 2
+        name_font, value_font, number_font = self.face(33), self.face(29), self.face(26)
+        half = (len(rows) + 1) // 2
+        for position, row in enumerate(rows):
+            column, line = (0, position) if position < half else (1, position - half)
+            x, y = self.left + column * (cell + gap), self.y + line * 66
+            name = _row_name(row)
+            self.write(x, y + 41, f'{position + 1:02}', number_font, MUTED)
+            self.avatar(x + 44, y + 5, 48, _row_identity(row), name)
+            value = str(rank_value(row)[0])
+            self.write(x + cell, y + 41, value, value_font, DEEP, 'rs')
+            room = cell - 106 - value_font.getlength(value) - 12
+            self.write(x + 106, y + 41, _ellipsize(self.visible_name(name), name_font, room), name_font, INK)
+        self.y += half * 66
+
+    def save(self, output_path):
+        from PIL import Image, ImageDraw
+        self.header()
+        self.stats()
+        self.one_line()
+        self.rhythm()
+        self.topics()
+        self.quotes()
+        self.rank()
+        height = math.ceil(self.y) + 64
+        canvas = Image.new('RGB', (self.width, height), PAPER)
+        draw = ImageDraw.Draw(canvas)
+        for op in self.ops:
+            op(canvas, draw)
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(path, format='PNG', optimize=True)
 
 
 def render_png_pillow(report, output_path):
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        import PIL  # noqa: F401
     except ImportError as exc:
         raise RuntimeError('Pillow is required for PNG report output') from exc
-    timezone = _report_timezone(report)
-    font_file = font_path()
-    regular = ImageFont.truetype(str(font_file), 20)
-    title_font = ImageFont.truetype(str(font_file), 34)
-    heading_font = ImageFont.truetype(str(font_file), 25)
-    small = ImageFont.truetype(str(font_file), 16)
-    width, margin = 1100, 64
-    title = str(report.get('title_prefix') or report.get('report_kind') or '群聊日报') + (' · 简报' if report.get('edition') == 'brief' else ' · 回顾')
-    topics = report.get('topics') or []
-    stats = report.get('stats') or {}
-    stat_labels = {'messages': '消息总量', 'total_messages': '消息总量', 'members': '活跃成员', 'active_members': '活跃成员', 'groups': '话题数量', 'images': '图片数量', 'excluded_own_reports': '已排除自发报告', 'image_understood': '已理解图片'}
-    stat_text = [f'{stat_labels.get(key, str(key))}：{value}' for key, value in stats.items()]
-    measure_texts = [title, str(report.get('chat_display') or report.get('chat_username') or '聊天日报'), str(report.get('range_text') or report.get('day') or ''), str(report.get('generated_at') or ''), str(report.get('one_line') or ''), *stat_text]
-    if report.get('leaders', {}).get('peak'):
-        peak = report['leaders']['peak']
-        measure_texts.append(f"消息峰值：{peak_time_text(report)}（{peak.get('count', 0)}条）")
-    for topic in topics:
-        measure_texts.extend((str(topic.get('topic') or '未命名话题'), str(topic.get('summary') or ''), topic_time_range(topic, timezone)))
-        details = topic.get('details')
-        measure_texts.extend(str(item) for item in (details if isinstance(details, list) else [details]))
-    measure_texts.extend(f"{q.get('speaker') or '群友'}：{q.get('text') or ''}" for q in report.get('quotes') or [] if q.get('text'))
-    rank_rows = ranked_participants(report)
-    measure_texts.extend(f"{row.get('name') or row.get('display_name') or '未知成员'}　{rank_value(row)[0]} {rank_value(row)[1]}" for row in rank_rows)
-    estimated_height = 1200 + 100 * len(topics)
-    for value in measure_texts:
-        text = str(value)
-        estimated_height += ((len(text) * 34 + width - 2*margin - 1) // (width - 2*margin) + text.count('\n') + 1) * 48
-    canvas = Image.new('RGB', (width, estimated_height), '#f4f6fa')
-    draw = ImageDraw.Draw(canvas)
-    y = 42
-    def text_block(text, font=regular, color='#273142', gap=10, x=margin, maxw=width-2*margin):
-        nonlocal canvas, draw, y
-        for line in _wrap_text(draw, text, font, maxw):
-            bbox = draw.textbbox((0, 0), line or '中', font=font)
-            h = bbox[3]-bbox[1]+gap
-            if y+h+margin > canvas.height:
-                raise RuntimeError('Pillow report layout exceeded its measured canvas')
-            draw.text((x, y), line, font=font, fill=color)
-            y += h
-    def section(title):
-        nonlocal y
-        y += 18
-        text_block(title, heading_font, '#384f87', 12)
-    text_block(title, title_font, '#243451', 16)
-    text_block(str(report.get('chat_display') or report.get('chat_username') or '聊天日报'), heading_font)
-    text_block(str(report.get('range_text') or report.get('day') or ''), small, '#778194')
-    text_block('生成时间：' + str(report.get('generated_at') or ''), small, '#778194')
-    if stat_text:
-        section('今日统计')
-        text_block('　'.join(stat_text), regular)
-    if report.get('leaders', {}).get('peak'):
-        peak = report['leaders']['peak']
-        text_block(f"消息峰值：{peak_time_text(report)}（{peak.get('count', 0)}条）", regular)
-    text_block(f'正文汉字：{body_chinese_count(report)}', small, '#778194')
-    if report.get('one_line'):
-        section('今日摘要'); text_block(str(report['one_line']))
-    section('消息节奏')
-    buckets = report.get('rhythm_buckets') or []
-    if buckets:
-        values = [max(0, int(b.get('count', 0) or 0)) for b in buckets]
-        chart_top, chart_height = y+8, 190
-        chart_left, chart_right = margin, width-margin
-        draw.line((chart_left, chart_top, chart_left, chart_top+chart_height), fill='#8792a3', width=2)
-        draw.line((chart_left, chart_top+chart_height, chart_right, chart_top+chart_height), fill='#8792a3', width=2)
-        vmax = max(values or [0], default=0)
-        for value in sorted({vmax*tick//4 for tick in range(5)}):
-            yy = chart_top+chart_height-round(chart_height*value/max(vmax,1))
-            draw.line((chart_left, yy, chart_right, yy), fill='#e0e5ed', width=1)
-            draw.text((margin-45, yy-9), str(value), font=small, fill='#687386')
-        axis_start = int(buckets[0].get('start_unix', 0))
-        axis_end = int(buckets[-1].get('end_unix_exclusive', axis_start + len(buckets)*600))
-        axis_duration = max(axis_end-axis_start, 1)
-        points = []
-        for bucket, value in zip(buckets, values):
-            px = chart_left+(chart_right-chart_left)*(float(bucket.get('start_unix', axis_start))-axis_start)/axis_duration
-            py = chart_top+chart_height-(chart_height*value/max(vmax,1))
-            points.append((px, py))
-        if len(points)>1: draw.line(points, fill='#5879d8', width=4)
-        for px, py in points: draw.ellipse((px-4, py-4, px+4, py+4), fill='#fff', outline='#5879d8', width=2)
-        hour = axis_start - (axis_start % 3600)
-        while hour <= axis_end:
-            if hour >= axis_start:
-                px = chart_left + (chart_right-chart_left)*(hour-axis_start)/axis_duration
-                local = datetime.fromtimestamp(hour, timezone)
-                draw.line((px, chart_top+chart_height, px, chart_top+chart_height+5), fill='#8792a3')
-                if local.hour % 2 == 0:
-                    label = local.strftime('%H:%M')
-                    draw.text((px-draw.textlength(label, font=small)/2, chart_top+chart_height+8), label, font=small, fill='#687386')
-            hour += 3600
-        first_day = datetime.fromtimestamp(axis_start, timezone).strftime('%m.%d')
-        last_day = datetime.fromtimestamp(axis_end, timezone).strftime('%m.%d')
-        draw.text((chart_left, chart_top+chart_height+31), first_day, font=small, fill='#687386')
-        draw.text((chart_right-draw.textlength(last_day, font=small), chart_top+chart_height+31), last_day, font=small, fill='#687386')
-        y = chart_top+chart_height+62
-    for topic in report.get('topics') or []:
-        section(str(topic.get('topic') or '未命名话题'))
-        tr = topic_time_range(topic, timezone)
-        if tr: text_block(tr, small, '#778194')
-        if topic.get('summary'): text_block(str(topic['summary']))
-        details = topic.get('details')
-        if isinstance(details, list):
-            for detail in details: text_block(str(detail))
-        elif details: text_block(str(details))
-    quotes = [q for q in report.get('quotes') or [] if q.get('text')]
-    if quotes:
-        section('群友金句')
-        for q in quotes:
-            text_block(f'{q.get("speaker") or "群友"}：{q["text"]}')
-    rank = ranked_participants(report)
-    if rank:
-        section('活跃前20名')
-        for index, row in enumerate(rank, 1):
-            text_block(f'{index}. {row.get("name") or row.get("display_name") or "未知成员"}　{rank_value(row)[0]} {rank_value(row)[1]}')
-    # Final resize removes the unused initial canvas height but keeps every rendered line.
-    canvas = canvas.crop((0, 0, width, max(1, y+margin)))
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(path, format='PNG')
+    _PngPage(report).save(output_path)
 
 
 def main(argv=None):

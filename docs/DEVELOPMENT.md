@@ -28,7 +28,9 @@ PYTHONPATH=.:deployment:agent_console .venv/bin/python -m pytest -q
 | `deployment/image_pipeline.py` 与 `prepare-images.py`、`caption-images.py`、`ocr_images.py`、`web_context.py`、`web_summary.py`、`ocr_summary.py` | 图片和网页证据阶段 |
 | `deployment/model_fallback.py` | 全局 fallback 链与切换规则 |
 | `deployment/daily-job.py`、`on-demand.py`、`realtime-images.py`、`daily-watchdog.py` | 调度、发送状态机、监控 |
-| `deployment/report_site.py`、`publish_reports.py`、`source_media.py`、`image-origin.py` | 网页报告和站点 |
+| `deployment/local_site.py` | 默认的本机报告网站（登录、路由、按哈希提供图片） |
+| `deployment/report_web_style.py` | 各网站页面共用的浅紫样式 |
+| `deployment/report_site.py`、`publish_reports.py`、`source_media.py`、`image-origin.py` | 网页报告整理和远端站点 |
 | `deployment/qq_*.py` | QQ OneBot 部分 |
 | `agent_console/daily_report.py` | HTML/PNG 渲染（名字沿用 v1，与任何控制台无关） |
 | `scripts/` | demo、doctor、安装、发布构建、文档检查 |

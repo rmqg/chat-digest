@@ -1,0 +1,14 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8787,
+  "username": "reader",
+  "password_scrypt": "REPLACE_WITH_VERIFIER_FROM_chat-digest_site_--set-password",
+  "session_hours": 720,
+  "cookie_secure": false,
+  "qq_groups": {
+    "1000000001": {
+      "name": "合成演示群（请替换）",
+      "reports_dir": "/srv/chat-digest-qq/reports/1000000001"
+    }
+  }
+}

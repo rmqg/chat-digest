@@ -575,6 +575,8 @@ def _run(args: argparse.Namespace) -> int:
                   "one_line": summary["one_line"], "stats": {},
                   "topics": summary["topics"], "quotes": summary["quotes"]}
         report["edition"] = edition
+        if project.get("report_title"):
+            report["title_prefix"] = str(project["report_title"])
         report["stats"]["messages"] = len(selected)
         report["stats"]["excluded_own_reports"] = before_exclusion - len(selected)
         enrich_report(report, selected, start, end, avatars)

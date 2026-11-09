@@ -9,7 +9,8 @@ chat-digest 的配置全部是 `runtime/` 下的 JSON 文件和少量环境变�
 | [`runtime/vision-qwen.json`](#runtimevision-qwenjson) | 可选 | 图片描述的备用模型 |
 | [`runtime/summary-trigger.json`](#runtimesummary-triggerjson) | 开启群内 @ 请求时必需 | `on-demand.py` |
 | [`runtime/daily-watchdog.json`](#runtimedaily-watchdogjson) | 开启 Bark 投递监控时必需 | `daily-watchdog.py` |
-| [`runtime/report-site.json`](#runtimereport-sitejson) | 可选 | `publish_reports.py`（把网页报告同步到远端站点） |
+| [`runtime/local-site.json`](#runtimelocal-sitejson) | `init` 自动创建 | `local_site.py`（默认的本机报告网站） |
+| [`runtime/report-site.json`](#runtimereport-sitejson) | 远端模式可选 | `publish_reports.py`（把网页报告同步到远端站点） |
 | [`runtime/report-site-access.json`](#runtimereport-site-accessjson) | 可选 | `site_access_notice.py`（两版报告送达后发一次网站入口说明） |
 | [`runtime/image-origin.json`](#runtimeimage-originjson) | 可选 | `image-origin.py`（站点原图回源） |
 | [`runtime/image-pins.json`](#runtimeimage-pinsjson) | 自动生成 | `bootstrap.py` 写，所有容器调用读 |
@@ -32,12 +33,13 @@ chat-digest 的配置全部是 `runtime/` 下的 JSON 文件和少量环境变�
 | `bot.names` | 字符串数组 | `[]` | 群里 @ 机器人时用的显示名。文本里同时有 `@` 和其中任一名字、并且要求“总结/汇总”，才算按需请求 | `["小助手"]` | 开启按需请求时必填 |
 | `bot.sender_ids` | 字符串数组 | `[]` | 机器人账号在导出里的 `sender_id`；这些人发的消息不当作请求，`mentions` 里出现它们也算 @ 到了机器人 | `["u_9f8e"]` | 导出里机器人账号的 ID 确定后填 |
 | `report_prefix` | 字符串 | `"chat-digest"` | 报告文件名前缀，例如 `chat-digest-20261108-0500-brief.png` | `"team-digest"` | 同一台机器跑多份配置时区分文件名；改了之后旧报告不会被网站识别 |
+| `report_title` | 字符串或不写 | 不写（显示“群聊日报”） | 微信日报标题里“· 简报/回顾”前面的部分 | `"读书会日报"` | 想让报告标题带上自己的名字时 |
 | `docker_network` | 字符串 | `"chat-digest_default"` | 需要联网的阶段容器（调模型、抓网页）使用的 Docker 网络；不联网的阶段固定用 `none` | `"bridge"` | 你给容器单独建了出口受控的网络时 |
 | `public_url` | 字符串或 `null` | `null` | 报告网站的 HTTPS 地址，只有网站入口说明会用到 | `"https://reports.example.org/"` | 启用 `report-site-access.json` 时必填 |
 | `image_origin_host` | 字符串或 `null` | `null` | 保留字段，程序不读；部署网站反代时可以记在这里备查 | `null` | 一般不用改 |
 | `daily_hour` | 整数 0–23 | `5` | 每天几点生成日报；日报窗口是“前一天这个时刻到今天这个时刻”的 24 小时 | `8` | 想换出报时间时 |
 | `timezone` | IANA 时区名 | `"Asia/Shanghai"` | 报告显示时间、日报窗口、时长解析使用的时区。宿主没有时区数据库（如 OpenWrt）时，不走夏令时的常用时区（中国、日本、韩国、新加坡、UTC 等）按固定偏移计算；其他时区需要安装 tzdata，`doctor` 会检查。导出里的时间一律是 UTC 秒，不受影响 | `"Europe/Berlin"` | 不在东八区时 |
-| `worker_uid` / `worker_gid` | 整数 | `1000` / `1000` | 阶段容器以这个 UID/GID 运行，必须能读导出目录、读写 `runtime/digest` 和 `runtime/reports`。调度脚本以 root 运行时（例如 OpenWrt 的 cron），它新建给容器用的目录会自动交给这个用户 | `1200` | 服务用户或导出目录的属主不是 1000 时；改了以后再运行一次 `./bin/chat-digest init`，把 `runtime/` 下这几个目录的属主改过来 |
+| `worker_uid` / `worker_gid` | 整数 | `1000` / `1000`（第一次 `init` 不是 root 运行时，写成当时的用户） | 阶段容器以这个 UID/GID 运行，必须能读导出目录、读写 `runtime/digest` 和 `runtime/reports`。调度脚本以 root 运行时（例如 OpenWrt 的 cron），它新建给容器用的目录会自动交给这个用户 | `1200` | 服务用户或导出目录的属主不是 1000 时；改了以后再运行一次 `./bin/chat-digest init`，把 `runtime/` 下这几个目录的属主改过来 |
 | `images.runtime` | 字符串 | `"chat-digest-runtime:2.0.0"` | 本地构建的运行时镜像引用。实际执行时用 `image-pins.json` 里锁定的不可变 ID | `"chat-digest-runtime:2.0.0"` | 升级镜像后，配合 `bootstrap.py --refresh-pins` |
 | `image_pending_grace_seconds` | 非负整数（秒） | `21600`（6 小时） | 导出里图片原图还是 `pending` 时最多等多久；超过就按“原图缺失”标注，报告照出，不会永远卡住 | `3600` | 导出工具下载原图很慢或很快时 |
 
@@ -118,6 +120,22 @@ v1.x 的 `group.id`、`bot.username`、`desktop_container`、`images.desktop`、
 
 另外两类提醒（每个窗口只推一次）：有图片被模型拒绝描述、有图片原图在导出里缺失。
 
+## `runtime/local-site.json`
+
+本机模式网站的配置，`./bin/chat-digest init` 或 `site --init` 自动创建（权限 600）并只显示一次随机密码。模板：[`examples/local-site.example.json`](../examples/local-site.example.json)。站点本身的用法见 [INSTALL.md](INSTALL.md#37-报告网站)。
+
+| 参数 | 类型 | 默认值 | 含义 | 示例 | 什么时候改 |
+|---|---|---|---|---|---|
+| `bind` | 字符串 | `"127.0.0.1"` | 监听地址，只接受 `127.0.0.1` | `"127.0.0.1"` | 不用改；要外网访问请加反代或隧道 |
+| `port` | 整数 | `8787` | 监听端口 | `8787` | 端口被占用时 |
+| `username` | 字符串 | `"reader"` | 登录用户名，不能含冒号 | `"reader"` | 想换用户名时 |
+| `password_scrypt` | 字符串 | `init` 生成 | 密码的 scrypt 校验串，不保存明文 | `scrypt$16384$8$1$…` | 用 `./bin/chat-digest site --set-password` 修改，不要手写 |
+| `session_hours` | 整数 | `720` | 登录保持多少小时（1～8760） | `168` | 想让设备更快退出登录时 |
+| `cookie_secure` | 布尔 | `false` | 登录 Cookie 是否只走 HTTPS | `true` | 站点放在 HTTPS 反代或隧道后面时**要改成 `true`** |
+| `qq_groups` | 对象 | `{}` | 要显示的 QQ 群，键是群号，值是 `{"name", "reports_dir"}`；相对路径按项目目录算 | 见模板 | 用 QQ 日报时 |
+
+改完配置要重启站点。改密码后所有已登录的设备都会退出。微信报告不用配置：配好 `group.conversation_id` 就会出现。
+
 ## `runtime/report-site.json`
 
 模板：[`examples/report-site.example.json`](../examples/report-site.example.json)。缺这个文件时不做远端发布。所有字段必填：`host`（主机名或 IP）、`user`（远端受限 SSH 用户）、`port`（1–65535）、`identity_file`（私钥文件，相对路径按配置文件所在目录）、`known_hosts`（主机公钥文件）、`remote_path`（远端相对路径，不能是绝对路径或含 `..`）。连接强制 BatchMode 和严格主机公钥校验，只上传 HTML 和报告引用到的图片，不上传 `sources.json`、配置或模型文件。
@@ -146,6 +164,8 @@ v1.x 的 `group.id`、`bot.username`、`desktop_container`、`images.desktop`、
 | `CHAT_DIGEST_PYTHON` | `.venv/bin/python`，再退到 `python3` | `bin/chat-digest` 和 procd 服务使用的解释器 |
 | `CHAT_DIGEST_FONT` | 自带 Resource Han Rounded | PNG 报告字体 |
 | `CHAT_DIGEST_TIMEZONE` | `Asia/Shanghai` | 报告元数据里没有时区时的渲染时区 |
+| `CHAT_DIGEST_REPORT_TITLE` | `群聊日报` | 报告数据里没有标题前缀时显示的标题（微信日报优先用 `report_title`） |
+| `CHAT_DIGEST_SITE_CONFIG` | `runtime/local-site.json` | 本机网站的配置路径 |
 | `CHAT_DIGEST_MACHINE` | 主机名 | 看门狗通知里显示的机器名 |
 | `CHAT_DIGEST_IMAGE_ORIGIN_CONFIG` | `runtime/image-origin.json` | procd 服务里 image-origin 的配置路径 |
 | `TIKTOKEN_CACHE_DIR` | `bin/chat-digest` 设为 `.cache/tiktoken` | 预取好的 o200k_base 分词数据目录；只读，不在线下载 |

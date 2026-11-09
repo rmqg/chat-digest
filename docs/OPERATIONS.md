@@ -38,8 +38,10 @@
 
 `daily-watchdog.py --tick` 只读 `delivery-state.json`，在“过了出报时间还没两版都送达”“生成或发送失败”“状态是 unknown”时推送一次，故障换阶段再推一次，恢复后推一次恢复通知；另外对“图片被模型拒绝”“原图缺失”各提醒一次。它不改回执、不补发。
 
-## 网站（可选）
+## 网站
 
+- **本机模式（默认）**：`./bin/chat-digest site --serve` 或 `chat-digest-site` 服务。报告文件变化后，下一次访问时自动重新整理微信报告到 `runtime/local-site/`（私有，可以随时删除，会重新生成）；整理失败时继续显示上一版，错误写到标准错误。不需要发布步骤。开通方法见 [INSTALL.md](INSTALL.md#37-报告网站)。
+- **远端模式（进阶）**：下面两项，只有网站必须放在另一台服务器上时才需要。
 - `publish_reports.py` 在每次生成成功后被自动触发，把成对的简报/回顾 HTML 和引用到的图片同步到 `report-site.json` 指定的远端；不上传 `sources.json`。
 - 原图回源 `image-origin.py` 只在本机回环地址提供按哈希命名的图片，前面需要你自己的反代和认证，示例 `deployment/services/chat-digest-image-origin.caddy`。
 

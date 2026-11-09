@@ -10,6 +10,8 @@
 
 字体的版权声明和保留字体名称限制只适用于字体文件本身，字体不因放在本仓库而改用 MIT。用这套字体渲染出来的报告不受 OFL 约束，但单独再分发字体文件时必须带上 OFL 声明。
 
+`agent_console/daily_report.py` 是 clean-room 实现：编写时只参考了旧版渲染器的外观（合成数据画出的样图和只描述画面的文字说明），没有打开或使用旧版及其他项目的渲染器代码，属于本项目的原创代码。
+
 v2.0.0 起，仓库里**不再包含**任何借用的源码文件。v1.x 里随附的 `tools/wcdb-key-tool`（TANGandXUE/wcdb-key-tool，MIT）、`deployment/vendor/wxextract`（boujuan/extract-wechat-messages-linux，MIT）以及改编自后者的 DAT 解码部分，都随微信提取功能一起移出了本仓库；它们的声明保留在 v1.x 的历史版本和 release 里。
 
 ## 运行时依赖（不随仓库分发，由 pip 或 Docker 在你的机器上安装）

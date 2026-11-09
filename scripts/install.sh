@@ -98,6 +98,7 @@ esac
 if [ "$VENV_STEP" = yes ]; then
     "$PROJECT/bin/chat-digest" doctor --demo-only
     printf '%s\n' 'Installed. Try the offline demo:  ./bin/chat-digest demo --output ./chat-digest-demo'
+    printf '%s\n' 'Report website (after ./bin/chat-digest init):  ./bin/chat-digest site --serve'
 else
     printf '%s\n' 'Installed without a Python environment. Check the host with:  ./bin/chat-digest doctor --host-only'
 fi

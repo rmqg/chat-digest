@@ -1,0 +1,24 @@
+[Unit]
+Description=chat-digest report website on the loopback address
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chat-digest
+Group=chat-digest
+WorkingDirectory=/opt/chat-digest
+Environment=CHAT_DIGEST_ROOT=/opt/chat-digest
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/chat-digest/runtime
+PrivateTmp=yes
+ExecStartPre=/usr/bin/python3 deployment/local_site.py --check-config
+ExecStart=/usr/bin/python3 deployment/local_site.py --serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
