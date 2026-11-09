@@ -292,16 +292,59 @@ class RebuildTests(unittest.TestCase):
                 (target / 'index.html').write_text('ok', encoding='utf-8')
 
             with patch('report_site.build_site', build), patch('sys.stderr'):
+                site.ensure_built()
+                site.wait()
                 self.assertTrue(site.ensure_built())
                 self.assertEqual(len(calls), 1)
                 site.checked = float('-inf')
                 self.assertTrue(site.ensure_built())
+                site.wait()
                 self.assertEqual(len(calls), 1, 'unchanged reports must not rebuild')
                 (reports / 'new.json').write_text('{}', encoding='utf-8')
                 site.checked = float('-inf')
                 self.assertTrue(site.ensure_built())
+                site.wait()
                 self.assertEqual(len(calls), 2)
                 self.assertTrue((output / 'index.html').is_file())
+
+    def test_no_request_waits_for_a_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            reports, output = root / 'reports', root / 'site'
+            reports.mkdir()
+            output.mkdir()
+            verifier = qq_report_site.hash_password(PASSWORD)
+            site = local_site.WeChatSite(reports, output)
+            config = {'bind': '127.0.0.1', 'port': 0, 'username': 'reader', 'password_scrypt': verifier,
+                      'session_hours': 720, 'cookie_secure': False, 'qq_groups': {}}
+            server = local_site.create_server(config, site)
+            port = server.server_address[1]
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            _, headers, _ = request(port, 'POST', '/login', body=f'username=reader&password={PASSWORD.replace(" ", "+")}&next=/')
+            cookie = headers['Set-Cookie'].split(';', 1)[0]
+            started, release = threading.Event(), threading.Event()
+
+            def slow_build(source, target):
+                started.set()
+                release.wait(30)
+                (target / 'index.html').write_text('微信列表', encoding='utf-8')
+
+            self.addCleanup(release.set)
+            with patch('report_site.build_site', slow_build):
+                status, headers, body = request(port, 'GET', '/wechat/', cookie=cookie)
+                self.assertEqual(status, 503)
+                self.assertEqual(headers['Retry-After'], '15')
+                self.assertIn('正在整理', body.decode('utf-8'))
+                self.assertTrue(started.wait(10))
+                self.assertEqual(request(port, 'GET', '/about', cookie=cookie)[0], 200, 'other pages stay available')
+                self.assertEqual(request(port, 'GET', '/wechat/', cookie=cookie)[0], 503, 'one build at a time')
+                release.set()
+                site.wait(10)
+                self.assertIsNone(site.builder)
+                status, _, body = request(port, 'GET', '/wechat/', cookie=cookie)
+            self.assertEqual((status, body.decode('utf-8')), (200, '微信列表'))
 
 
 class RendererThroughSiteTests(unittest.TestCase):
@@ -343,6 +386,8 @@ class RendererThroughSiteTests(unittest.TestCase):
         path = self.root / 'site.json'
         path.write_text(json.dumps(config), encoding='utf-8')
         site = local_site.WeChatSite(self.reports, self.root / 'runtime' / 'local-site')
+        site.ensure_built()
+        site.wait()
         self.server = local_site.create_server(local_site.load_config(path), site)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()

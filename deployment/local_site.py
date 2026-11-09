@@ -128,13 +128,18 @@ def init_config(path=None, *, owner: tuple[int, int] | None = None) -> dict | No
 
 
 class WeChatSite:
-    """Keeps a private built copy of the WeChat reports, rebuilt when the report files change."""
+    """Keeps a private built copy of the WeChat reports, rebuilt in the background when the report files change.
+
+    A build can take minutes on a small machine with a long history, far longer than a reverse proxy waits for
+    an answer, so no request ever waits for one: the previous pages stay available meanwhile.
+    """
 
     def __init__(self, reports_dir: Path, output_dir: Path):
         self.reports_dir, self.output_dir = Path(reports_dir), Path(output_dir)
         self.lock = threading.Lock()
         self.signature = None
         self.checked = 0.0
+        self.builder = None
 
     def _current_signature(self):
         seen = []
@@ -149,22 +154,36 @@ class WeChatSite:
                 continue
         return sorted(seen)
 
+    def _build(self, current) -> None:
+        try:
+            import report_site
+            report_site.build_site(self.reports_dir, self.output_dir)
+            with self.lock:
+                self.signature = current
+        except Exception as exc:
+            print(f'local_site: report build failed: {type(exc).__name__}', file=sys.stderr)
+        finally:
+            with self.lock:
+                self.builder = None
+                self.checked = time.monotonic()  # a failing build is retried at the check interval, not in a loop
+
     def ensure_built(self) -> bool:
-        """Rebuild if needed. A failed rebuild keeps serving the previous pages."""
+        """Start a rebuild if the reports changed. True when there are pages to serve; a failed build keeps the old ones."""
         with self.lock:
             now = time.monotonic()
-            if self.signature is not None and now - self.checked < REBUILD_CHECK_SECONDS:
-                return (self.output_dir / 'index.html').is_file()
-            self.checked = now
-            current = self._current_signature()
-            if current != self.signature:
-                try:
-                    import report_site
-                    report_site.build_site(self.reports_dir, self.output_dir)
-                    self.signature = current
-                except Exception as exc:
-                    print(f'local_site: report build failed: {type(exc).__name__}', file=sys.stderr)
+            if self.builder is None and (self.signature is None or now - self.checked >= REBUILD_CHECK_SECONDS):
+                self.checked = now
+                current = self._current_signature()
+                if current != self.signature:
+                    self.builder = threading.Thread(target=self._build, args=(current,), name='report-build', daemon=True)
+                    self.builder.start()
             return (self.output_dir / 'index.html').is_file()
+
+    def wait(self, timeout=None) -> None:
+        """Block until a running build ends. For tests and startup checks; requests never call this."""
+        builder = self.builder
+        if builder is not None:
+            builder.join(timeout)
 
 
 def wechat_enabled() -> bool:
@@ -317,7 +336,8 @@ def make_handler(config: dict, wechat: WeChatSite | None):
             if wechat is None:
                 return self._error(404)
             if not wechat.ensure_built():
-                return self._error(503, '报告还在生成，或者最近一次整理失败，请稍后再试。')
+                return self._send(503, error_page(503, '报告正在整理，第一次可能要几分钟，页面会自动刷新。'),
+                                  extra=(('Retry-After', '15'), ('Refresh', '15')))
             if tail in ('', 'index.html'):
                 return self._file(wechat.output_dir, 'index.html', HTML_TYPE, NO_STORE)
             kind, _, name = tail.partition('/')
@@ -477,8 +497,11 @@ def main(argv=None) -> int:
     if args.check_config:
         print('configuration OK')
         return 0
-    server = create_server(config, default_wechat_site())
+    wechat = default_wechat_site()
+    server = create_server(config, wechat)
     print(f'report site: http://127.0.0.1:{server.server_address[1]}/', flush=True)
+    if wechat is not None:
+        wechat.ensure_built()  # the first visitor should not be the one to start it
     try:
         server.serve_forever()
     finally:
