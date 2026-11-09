@@ -1,13 +1,13 @@
 # 安装
 
-本文从一台干净的 Linux 服务器开始，一步一步装到“每天自动出日报并发到群里”。前两节（离线 demo）不需要 Docker、账号、模型或网络（安装依赖那一步除外），可以先在任何机器上试。
+本文用于安装细节和长期运维：从 Linux 服务器到“每天自动出日报并发到群里”。**第一次接触请先看 [QUICKSTART.md](QUICKSTART.md)**：A 路线约 5 分钟看离线演示（依赖下载另计），无账号、key 或 Docker；B 路线从真实导出做到本机密码网站，不启用自动发送。真实部署需要 Linux 命令行和 Docker 基础。
 
 支持的系统、版本和实测情况见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 ## 0. 准备
 
 - Linux，x86-64 或 arm64；Python 3.11 或更新（Debian 12 自带 3.11，Ubuntu 24.04 自带 3.12）。
-- Debian/Ubuntu 上：`sudo apt install python3 python3-venv ca-certificates`。
+- Debian/Ubuntu 上：`sudo apt update && sudo apt install -y python3 python3-venv ca-certificates tzdata`。正式运行要求 Python 3.11+；根目录安装向导的轻量预检可在 3.10 上执行，但不会使 3.10 获得完整运行支持。
 - 生产运行另外需要 Docker Engine（阶段处理都在只读、无特权、限内存的容器里跑），以及一个能产出 [chat-export/v1](CONTRACT.md) 目录的导出工具和一个实现 chat-send/v1 的发送命令，例如 [wechat-export-send](https://github.com/rmqg/wechat-export-send)。
 
 ## 1. 下载并校验
@@ -24,19 +24,45 @@ cd chat-digest
 
 `sha256sum -c` 应该输出 `chat-digest-2.0.0.tar.gz: OK`。`gh attestation verify` 证明这个文件是 GitHub Actions 在 rmqg/chat-digest 仓库里由 release workflow 构建的。也可以直接 `git clone https://github.com/rmqg/chat-digest.git` 后 `git checkout v2.0.0`。
 
-## 2. 一条命令安装，然后跑离线 demo
+## 2. 安装入口与离线 demo
+
+**新手入口是根目录 `./install.sh`**，默认交互：选择 `1`（demo）或 `2`（real），按提示填写配置和网站密码（至少 8 位；留空自动生成）。用普通运行用户执行，不要用 `sudo` 把虚拟环境和配置装成 root 属主。
 
 ```sh
-./scripts/install.sh            # 先看计划，什么都不改
-./scripts/install.sh --apply    # 建 .venv、装依赖、预取分词数据、跑 doctor --demo-only
-./bin/chat-digest demo --output ./chat-digest-demo
+./install.sh
 ```
 
-`--apply` 会：用 `python3` 建 `.venv`；`pip install -r requirements.txt`；把 tiktoken 的 o200k_base 数据下载到 `.cache/tiktoken`（之后都离线读取）；最后运行 `chat-digest doctor --demo-only`，每项都应是 `[ OK ]`。
+演示模式会建立 `.venv/`、安装 `requirements.txt`、预取 tiktoken 的 o200k_base 数据到 `.cache/tiktoken`、初始化私有配置、自检，然后自动生成 `chat-digest-demo/`。安装下载需要网络，演示不访问外部模型、账号或聊天客户端。打开 `chat-digest-demo/index.html` 查看简报和回顾的 HTML/PNG；模拟发送只写本地 `outbox/`，不发群。**演示输出目录会被重建，不要在里面存自己的文件。**
 
-demo 读取仓库自带的虚构导出 `examples/synthetic-export/`，在本机 127.0.0.1 起一个演示用的“模型”，走真实的 `digest.py` 生成简报和回顾两版 HTML/PNG，再用 `scripts/demo-chat-send.py` 按 chat-send/v1 “发送”一次（只是写进 `./chat-digest-demo/outbox/`，不会联系任何聊天软件）。打开 `./chat-digest-demo/index.html` 看结果。它证明的是流程和渲染能走通，总结内容是演示数据，不代表真实模型的效果。
+无人值守或答案文件方式，任选其一：
 
-QQ 的离线样例：`./bin/chat-digest demo --qq --output ./qq-digest-demo`。
+```sh
+./install.sh --non-interactive           # 默认 demo，自动生成离线演示
+# 或：先复制、编辑并保护答案文件
+umask 077
+cp examples/install.env.example ./install.env
+chmod 600 ./install.env
+nano ./install.env
+./install.sh --config ./install.env
+```
+
+答案文件是 `KEY=value` 数据，不是要执行的 shell 脚本。`MODE=demo|real`；真实模式填 `EXPORT_ROOT`、`CONVERSATION_ID`、`GROUP_NAME`、`MODEL_BASE_URL`、`MODEL_API_KEY`、`MODEL_NAME`，`SITE_PASSWORD` 可留空自动生成。它含密钥和可能的明文站点密码，绝不提交或分享。向导写出的 `runtime/` 权限为 `700`、配置 JSON 为 `600`，网站用户名默认 `reader`。
+
+真实模式只安装、写配置和运行 doctor，**不会自动 build/pin 镜像、请求真实模型出报、启动网站或发群消息**。第一次 doctor 可能因镜像未构建/锁定返回非零；“配置已写入 runtime/”之后按提示构建、锁定，再复查即可。完整顺序见 [QUICKSTART B 路线](QUICKSTART.md#b-真实导出到本机密码网站)。
+
+**原底层入口仍保留，适合只装依赖或复制服务文件：**
+
+```sh
+./scripts/install.sh                     # 只显示计划，不修改文件
+./scripts/install.sh --apply             # .venv、依赖、分词缓存、doctor --demo-only
+./bin/chat-digest demo --output ./chat-digest-demo   # 底层安装器不自动生成 demo
+```
+
+根目录入口收到旧参数（例如 `./install.sh --apply --services systemd`）时会转交底层入口，保留原语义；要在向导中加参数，应同时写 `--config` 或 `--non-interactive`，例如 `./install.sh --non-interactive --python /usr/bin/python3.11`。
+
+安装成功的 doctor 结尾为 `doctor: 所有必需检查通过`。演示模型只是本机 127.0.0.1 上的替身，总结是虚构示例，不代表真实 AI 效果。以后可单独重跑 demo；QQ 的离线样例用 `./bin/chat-digest demo --qq --output ./qq-digest-demo`。
+
+`--no-venv` 用于 OpenWrt 等仅运行宿主调度、重计算都走 Docker 的机器：它跳过 `.venv`、pip、分词缓存和自动演示，用 `doctor --host-only` 检查宿主。**它不是在没有依赖的宿主直接运行离线 demo 的办法**，详见 [排障](TROUBLESHOOTING.md#docker-only-宿主与---no-venv)。
 
 ## 3. 生产部署
 
@@ -52,6 +78,8 @@ sudo -u chat-digest ./bin/chat-digest init     # 建 runtime/（700）和 runtim
 ```
 
 `runtime/` 存放配置、模型 key、报告、回执和缓存，属于私有数据，不要放进 Git 或网站目录。
+
+如果从 QUICKSTART 的普通用户试用切换到专用服务用户，要同时把 `runtime/project.json` 的 `worker_uid` / `worker_gid` 改成该服务用户的数字 UID/GID（可用 `id chat-digest` 查看），再运行一次该用户的 `init`。只 `chown` 项目而保留旧 worker ID，会让容器无法读写私有运行目录。下面是手动部署流程；已由向导填好的导出/模型配置无需再复制模板覆盖。
 
 ### 3.2 构建并锁定运行时镜像
 

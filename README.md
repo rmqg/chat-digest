@@ -4,6 +4,12 @@
 
 > 本仓库原名 `rmqg/wechat-digest`（v1.x）。v2.0.0 起只负责“总结和出报告”，微信的提取、解密和发送移到了 [wechat-export-send](https://github.com/rmqg/wechat-export-send)。从 v1.2.x 升级请看 [迁移指南](docs/MIGRATION-v2.md)。
 
+**先选难度，再开始：**
+
+- **只想看看效果：约 5 分钟的离线演示**（依赖下载耗时另计）。不需要微信/QQ 账号、模型账号或 API key，也不需要 Docker；首次安装依赖要联网，演示本身只访问本机。
+- **处理真实聊天：需要 Linux 命令行 + Docker 基础**。还要准备有权限处理的聊天导出，以及自己的模型接口和 key；不是登录微信就能一键开用，也不默认替你发群消息。
+- **第一次用 Linux？直接跟着 [新手快速开始](docs/QUICKSTART.md)**：从安装系统依赖开始，A 路线看虚构演示，B 路线做出真实报告并在本机带密码的网站查看。
+
 ## 它是什么
 
 - **读导出，不碰客户端**：输入是 [chat-export/v1](docs/CONTRACT.md) 目录（一种简单的 JSONL 聊天记录导出格式），由导出工具产出。微信用 [wechat-export-send](https://github.com/rmqg/wechat-export-send)，企业微信用 [wecom-export](https://github.com/rmqg/wecom-export)，它们都产出这个格式；其他遵守格式的导出工具也可以。chat-digest 只读这个目录。
@@ -33,31 +39,29 @@
 | 输入 | 合成的 chat-export/v1 目录 | 真实导出工具的输出与 v2 的联调 |
 | 发送 | 合成的 chat-send/v1 演示命令 | 真实的 `wechat-send` 与 v2 的联调 |
 
-## 快速开始：离线 demo（不用账号、不联网）
+## 快速开始：离线 demo（不用账号或 key）
 
 ```sh
-git clone https://github.com/rmqg/chat-digest.git && cd chat-digest   # 或解压 release 包，见 docs/INSTALL.md
-./scripts/install.sh --apply        # 建 .venv、装依赖、预取分词数据（只有这一步需要网络）
-./bin/chat-digest demo --output ./chat-digest-demo
+git clone https://github.com/rmqg/chat-digest.git
+cd chat-digest
+./install.sh                       # 选 1（demo）；安装、自检并生成演示，首次安装需要联网
 ```
 
-打开 `./chat-digest-demo/index.html`。demo 读取仓库自带的虚构导出 `examples/synthetic-export/`，用本机 127.0.0.1 上的演示模型走一遍真实的生成流程，再用演示发送器“发送”到本地 `outbox/` 目录。总结内容是演示数据，不代表真实模型效果。
+打开 `./chat-digest-demo/index.html`。demo 使用仓库自带的**虚构**导出和本机演示模型，生成简报、回顾两版 HTML/PNG；“发送”只写进本地 `outbox/`，不联系聊天软件。总结内容不是实际 AI 效果。重复运行会重建指定输出目录，不要把自己的文件放在里面。
+
+无人值守用 `./install.sh --non-interactive`（默认 demo），或复制 `examples/install.env.example` 后用 `./install.sh --config ./install.env` 读答案文件。具体步骤、预期结果与安全注意事项见 [QUICKSTART.md](docs/QUICKSTART.md)。
+
+![示意图：合成群聊生成简报与回顾，不是真实聊天或实测截图](docs/assets/report-example.svg)
 
 ## 快速开始：接入真实数据
 
-```sh
-./bin/chat-digest init                                  # 建 runtime/ 和 project.json
-docker build -t chat-digest-runtime:2.0.0 . && ./bin/chat-digest pin-images
-./bin/chat-digest list-conversations --export-root /srv/chat-export/acct1
-# 编辑 runtime/project.json（export.root、group.conversation_id、send）和 runtime/gemini-model.json
-./bin/chat-digest doctor --probe-send                   # 自检，发送只做 dry run
-./bin/chat-digest prepare-only                          # 生成当天两版报告，不发送
-```
+按 [QUICKSTART 的 B 路线](docs/QUICKSTART.md#b-真实导出到本机密码网站) 操作：准备 `chat-export/v1` 导出 → 交互安装时选 `2`（real；或填答案文件）→ 构建并锁定 Docker 镜像 → 生成报告 → 启动 `./bin/chat-digest site --serve`。模型请求会把选定聊天内容发送给你配置的服务并产生费用。
 
-确认报告没问题后再启用定时任务和服务，见 [INSTALL.md](docs/INSTALL.md)。
+**先看报告，不先自动发送。** 确认会话、数据权限和报告内容后，才考虑 [INSTALL.md](docs/INSTALL.md) 的定时发送与长期服务。
 
 ## 文档
 
+- [新手快速开始](docs/QUICKSTART.md)：从全新 Linux 出发，两条路线、逐步命令与预期结果
 - [安装](docs/INSTALL.md)：从零到每天自动出报，systemd 和 OpenWrt procd 两种方式；[报告网站](docs/INSTALL.md#37-报告网站)默认运行在本机（`./bin/chat-digest site --serve`），要放到别的服务器上才需要远端模式
 - [配置](docs/CONFIGURATION.md)：每个参数的含义、类型、默认值、示例和什么时候改
 - [排障](docs/TROUBLESHOOTING.md)：按症状给命令

@@ -12,20 +12,27 @@ export PYTHONPATH="$HERE/deployment:$HERE/agent_console${PYTHONPATH:+:$PYTHONPAT
 cmd=${1:-help}
 [ "$#" -gt 0 ] && shift
 case "$cmd" in
-    demo)               exec "$PY" "$HERE/scripts/generate-demo.py" "$@" ;;
-    doctor)             exec "$PY" "$HERE/scripts/doctor.py" "$@" ;;
-    init)               exec "$PY" "$HERE/deployment/bootstrap.py" --init-runtime "$@" ;;
-    pin-images)         exec "$PY" "$HERE/deployment/bootstrap.py" --pin-images "$@" ;;
-    check)              exec "$PY" "$HERE/deployment/bootstrap.py" --check "$@" ;;
-    list-conversations) exec "$PY" "$HERE/deployment/chat_export.py" "$@" list ;;
-    check-export)       exec "$PY" "$HERE/deployment/chat_export.py" "$@" ;;
-    run)                exec "$PY" "$HERE/deployment/run-digest.py" "$@" ;;
-    daily-tick)         exec "$PY" "$HERE/deployment/daily-job.py" --tick "$@" ;;
-    prepare-only)       exec "$PY" "$HERE/deployment/daily-job.py" --prepare-only "$@" ;;
-    on-demand)          exec "$PY" "$HERE/deployment/on-demand.py" "$@" ;;
-    watchdog)           exec "$PY" "$HERE/deployment/daily-watchdog.py" "$@" ;;
-    qq)                 exec "$PY" "$HERE/deployment/qq_service.py" "$@" ;;
-    site)               exec "$PY" "$HERE/deployment/local_site.py" "$@" ;;
+    demo|doctor|init|pin-images|check|list-conversations|check-export|run|daily-tick|prepare-only|on-demand|watchdog|qq|site)
+        if ! command -v "$PY" >/dev/null 2>&1; then
+            printf 'chat-digest：找不到可执行的 Python：%s\n需要 Python 3.11 或更新版本。\n' "$PY" >&2
+            case "$(uname -s)" in
+                Darwin) printf '安装命令：brew install python@3.11\n' >&2 ;;
+                *) printf 'Debian/Ubuntu 安装命令：sudo apt-get update && sudo apt-get install -y python3.11 python3.11-venv\n' >&2 ;;
+            esac
+            printf '若 CHAT_DIGEST_PYTHON 设置错误，请进入项目目录执行：\nunset CHAT_DIGEST_PYTHON; ./install.sh\n' >&2
+            exit 1
+        fi
+        if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+            printf 'chat-digest：Python 无法启动或版本低于 3.11，请安装 Python 3.11+。\n' >&2
+            case "$(uname -s)" in
+                Darwin) printf '安装命令：brew install python@3.11\n' >&2 ;;
+                *) printf 'Debian/Ubuntu 安装命令：sudo apt-get update && sudo apt-get install -y python3.11 python3.11-venv\n' >&2 ;;
+            esac
+            printf '然后进入项目目录执行：\nunset CHAT_DIGEST_PYTHON; ./install.sh\n' >&2
+            exit 1
+        fi
+        exec "$PY" "$HERE/scripts/cli.py" "$cmd" "$@"
+        ;;
     version)            cat "$HERE/VERSION" ;;
     help|-h|--help)
         cat <<'USAGE'
@@ -48,5 +55,5 @@ usage: chat-digest <command> [options]
   version              print the version
 USAGE
         ;;
-    *) printf 'unknown command: %s (try: chat-digest help)\n' "$cmd" >&2; exit 2 ;;
+    *) printf '未知命令：%s（查看帮助：./bin/chat-digest help）\n' "$cmd" >&2; exit 2 ;;
 esac

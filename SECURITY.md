@@ -4,7 +4,7 @@ chat-digest 处理聊天记录、模型 API key 和网站凭证。不要在公�
 
 ## 报告漏洞
 
-请使用 GitHub 的私密漏洞报告（仓库 Security 页的 “Report a vulnerability”）。如果不可用，先开一个**不含任何敏感内容**的 issue 请求联系方式。报告里请写：受影响的版本和平台、入口（哪个命令或服务）、风险、以及用**完全虚构的数据**做的最小复现（可以基于 `examples/synthetic-export/`）。
+请使用 GitHub 的私密漏洞报告（仓库 Security 页的 “Report a vulnerability”），或发送邮件至 `ruomuqiuguang@icloud.com`。报告里请写：受影响的版本和平台、入口（哪个命令或服务）、风险、以及用**完全虚构的数据**做的最小复现（可以基于 `examples/synthetic-export/`）。
 
 支持的版本：只为最新的 2.x 修复安全问题；1.x（wechat-digest）不再维护。
 

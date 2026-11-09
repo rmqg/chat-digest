@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="390" viewBox="0 0 1100 390" role="img" aria-labelledby="title desc">
+  <title id="title">示意图：离线演示与真实部署路线</title>
+  <desc id="desc">纯合成流程图，没有真实聊天、账号或截图。离线演示使用虚构导出和本机演示模型；真实部署由已有授权导出经 Docker 和自备模型生成报告，在本机带密码的网站查看。</desc>
+  <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#607580" stroke-width="1.5"/></marker></defs>
+  <rect width="1100" height="390" rx="20" fill="#f4f7fa"/>
+  <g font-family="sans-serif" fill="#203745">
+    <text x="32" y="42" font-size="24" font-weight="700">先看演示，再接真实数据</text>
+    <text x="32" y="69" font-size="14" fill="#536874">示意图 · 全部为合成图形，不是真实数据或实测截图</text>
+    <rect x="28" y="90" width="1044" height="110" rx="14" fill="#e3f3eb"/>
+    <text x="48" y="119" font-size="18" font-weight="700">A · 离线演示</text>
+    <text x="48" y="146" font-size="14">约 5 分钟</text><text x="48" y="171" font-size="13">首次装依赖需联网</text>
+    <rect x="230" y="112" width="218" height="65" rx="10" fill="white"/>
+    <text x="251" y="139" font-size="17">仓库自带虚构导出</text><text x="251" y="161" font-size="13" fill="#536874">不需要聊天账号</text>
+    <rect x="502" y="112" width="218" height="65" rx="10" fill="white"/>
+    <text x="523" y="139" font-size="17">本机演示模型</text><text x="523" y="161" font-size="13" fill="#536874">不需要 API key / Docker</text>
+    <rect x="774" y="112" width="270" height="65" rx="10" fill="white"/>
+    <text x="795" y="139" font-size="17">简报 + 回顾 HTML / PNG</text><text x="795" y="161" font-size="13" fill="#536874">发送仅写本地 outbox，不发群</text>
+    <rect x="28" y="217" width="1044" height="118" rx="14" fill="#e5edf8"/>
+    <text x="48" y="247" font-size="18" font-weight="700">B · 真实部署</text><text x="48" y="274" font-size="14">Linux 命令行</text><text x="48" y="299" font-size="13">+ Docker 基础</text>
+    <rect x="230" y="240" width="218" height="72" rx="10" fill="white"/>
+    <text x="251" y="268" font-size="17">你有权处理的导出</text><text x="251" y="293" font-size="13" fill="#536874">chat-export/v1 · 只读输入</text>
+    <rect x="502" y="240" width="218" height="72" rx="10" fill="white"/>
+    <text x="523" y="268" font-size="17">Docker + 自备模型</text><text x="523" y="293" font-size="13" fill="#536874">内容交给模型服务 · 可能付费</text>
+    <rect x="774" y="240" width="270" height="72" rx="10" fill="white"/>
+    <text x="795" y="268" font-size="17">两版报告 + 本机密码网站</text><text x="795" y="293" font-size="13" fill="#536874">127.0.0.1:8787 · 不自动发群</text>
+    <text x="32" y="369" font-size="14" fill="#536874">chat-digest 不登录聊天账号，不提取数据库密钥。真实导出由独立工具完成。</text>
+  </g>
+  <g stroke="#607580" stroke-width="2" marker-end="url(#arrow)"><path d="M455 145H491"/><path d="M727 145H763"/><path d="M455 276H491"/><path d="M727 276H763"/></g>
+</svg>

@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 新增根目录中文安装向导：检查发行版、内核、Python、Docker/Compose、KVM、内存和磁盘；支持交互、`--config` 答案文件、`--non-interactive` 默认模板，私有配置权限为 600，末尾自动 doctor 并说明下一步。`scripts/install.sh` 的生产非交互参数保持兼容，根入口也能原样转发。
+- 新手教程 `docs/QUICKSTART.md` 区分无需账号和模型密钥的离线演示与真实部署，配合成数据示意图；补充宿主无 venv、历史群别名、WXGF/ffmpeg、时区和自发长图排障。
+- doctor 的失败与警告附可复制的修复命令；CLI 对常见配置、依赖和环境问题给出中文解释，不再只显示英文异常栈。
 - 头像及时更新：日报生成前调用 `export.refresh_avatars_command` 刷新发言者头像，失败时用导出里现有的头像并记录日志。QQ 头像不再永久缓存：每次先取最新的，失败才用缓存。已生成的报告保留当时的头像。
 - 报告头像：群头像也进 `avatars`（读 manifest 里会话的可选字段 `avatar`，见 `docs/CONTRACT.md`），外部渲染器画的群头像回来了；导出器没有写头像时仍按“没有头像”处理。
 

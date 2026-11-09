@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="520" viewBox="0 0 1080 520" role="img" aria-labelledby="title desc">
+  <title id="title">示意图：虚构社区花园群的简报与回顾</title>
+  <desc id="desc">纯手绘合成图，非产品截图或真实模型输出。用虚构花园讨论说明同一批聊天生成简报与回顾，话题可关联原文来源。</desc>
+  <rect width="1080" height="520" rx="20" fill="#edf2f7"/>
+  <g font-family="sans-serif" fill="#243746">
+    <text x="30" y="39" font-size="23" font-weight="700">一份群聊，两种阅读节奏</text>
+    <text x="30" y="65" font-size="14" fill="#586b7d">示意图 · 内容、姓名、数据均为虚构 · 非真实模型输出或产品截图</text>
+    <rect x="28" y="87" width="495" height="402" rx="14" fill="white"/>
+    <rect x="550" y="87" width="502" height="402" rx="14" fill="white"/>
+    <rect x="49" y="108" width="67" height="28" rx="6" fill="#e4f3eb"/>
+    <text x="64" y="128" font-size="15" fill="#236347">简报</text>
+    <text x="49" y="170" font-size="26" font-weight="700">社区花园日报</text>
+    <text x="49" y="197" font-size="13" fill="#738191">虚构演示群 · 示例时段</text>
+    <text x="49" y="235" font-size="17">一句话：周末活动已初步分工。</text>
+    <path d="M49 253H500" stroke="#e1e8ee"/>
+    <text x="49" y="287" font-size="19" font-weight="700">01 · 周末准备</text>
+    <text x="49" y="317" font-size="16">周六上午集合，先整理工具。</text>
+    <text x="49" y="346" font-size="16">林苗带标签，周禾检查水管。</text>
+    <rect x="49" y="369" width="450" height="47" rx="8" fill="#f2f6fa"/>
+    <text x="64" y="399" font-size="15" fill="#49657a">▸ 原文来源（在 HTML 报告中展开）</text>
+    <text x="49" y="457" font-size="13" fill="#738191">先掌握重点 · PNG 便于分享 · HTML 便于核对</text>
+    <rect x="573" y="108" width="67" height="28" rx="6" fill="#e6edf9"/>
+    <text x="588" y="128" font-size="15" fill="#365d95">回顾</text>
+    <text x="573" y="170" font-size="26" font-weight="700">社区花园日报</text>
+    <text x="573" y="197" font-size="13" fill="#738191">同一批虚构聊天 · 更完整的讨论脉络</text>
+    <text x="573" y="235" font-size="19" font-weight="700">01 · 从提议到分工</text>
+    <text x="573" y="267" font-size="16">群友先提出整理花园，随后讨论时间。</text>
+    <text x="573" y="296" font-size="16">约定周六上午集合，并确认标签和水管。</text>
+    <rect x="573" y="316" width="454" height="99" rx="8" fill="#f2f6fa"/>
+    <text x="588" y="343" font-size="14" fill="#49657a">▾ 原文来源（示意）</text>
+    <text x="588" y="372" font-size="15">09:10 林苗：我来准备植物标签。</text>
+    <text x="588" y="397" font-size="15">09:12 周禾：我先检查一下水管。</text>
+    <text x="573" y="457" font-size="13" fill="#738191">顺着话题回顾 · 结论仍需核对原文</text>
+  </g>
+</svg>
