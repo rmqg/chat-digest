@@ -141,6 +141,8 @@ sudo systemctl enable --now chat-digest-watchdog.timer   # Bark 投递监控（�
 ./bin/chat-digest site --set-password   # 以后想换密码时
 ```
 
+站点启动后在后台整理报告：第一次整理时页面显示“正在整理”并自动刷新（报告多、机器慢时可能要几分钟），以后有新报告时继续提供旧页面，整理完自动换新。
+
 已经 `init` 过的旧部署，用 `./bin/chat-digest site --init` 单独创建配置。长期运行用 `deployment/services/` 里的 `chat-digest-site` 服务（systemd 或 procd，`install.sh --services` 会复制过去，但不会替你启用）。QQ 群写进配置的 `qq_groups`，见 [CONFIGURATION.md](CONFIGURATION.md#runtimelocal-sitejson)。
 
 站点只监听 `127.0.0.1`，并且要登录。想从别的设备访问，自己在前面加反代或隧道，**并把 `cookie_secure` 改成 `true`**（走 HTTPS 时）。下面三种任选一种，都不要去掉站点自己的登录：
