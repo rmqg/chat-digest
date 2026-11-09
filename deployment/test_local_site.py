@@ -275,6 +275,14 @@ class ConfigTests(unittest.TestCase):
             local_site.load_config(example)
 
 
+class ConfiguredSourceTests(unittest.TestCase):
+    def test_the_placeholder_from_init_is_not_a_configured_group(self):
+        template = json.loads((Path(__file__).resolve().parent.parent / 'examples' / 'project.example.json').read_text(encoding='utf-8'))
+        for group, expected in ((template['group']['conversation_id'], False), ('', False), ('g_real', True)):
+            with patch.object(report_site, 'TARGET_GROUP', group):
+                self.assertEqual(local_site.wechat_enabled(), expected, group)
+
+
 class RebuildTests(unittest.TestCase):
     def test_rebuilds_on_change_and_keeps_serving_after_a_failed_build(self):
         with tempfile.TemporaryDirectory() as temp:

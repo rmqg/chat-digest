@@ -188,7 +188,8 @@ class WeChatSite:
 
 def wechat_enabled() -> bool:
     import report_site
-    return bool(report_site.TARGET_GROUP)
+    group = str(report_site.TARGET_GROUP or '')
+    return bool(group) and not group.startswith('REPLACE_')  # the placeholder `init` writes is not a configured group
 
 
 def _session_key(verifier: str) -> bytes:
