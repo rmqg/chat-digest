@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import fixture_export as fx
+import avatar_refresh
 import report_avatars
 import source_media
 import summary_commands
@@ -158,6 +161,43 @@ class AvatarTests(ExportFixture):
         path.write_text(json.dumps(manifest), encoding="utf-8")
         result = report_avatars.collect_avatars(self.root, fx.CONVERSATION, [fx.CONVERSATION])
         self.assertTrue(result[fx.CONVERSATION]["available"])
+
+
+class AvatarRefreshTests(ExportFixture):
+    def _project(self, command):
+        return {"export": {"root": str(self.root), "refresh_avatars_command": command}, "group": {"conversation_id": fx.CONVERSATION}}
+
+    def _run(self, runner, command=("refresh",)):
+        self.root.mkdir(parents=True)
+        fx.build_export(self.root, [fx.text("m1", 100, "u1", "a"), fx.text("m2", 200, "u2", "b"), fx.text("m3", 900, "u3", "late")])
+        with tempfile.TemporaryDirectory() as temporary, patch.object(avatar_refresh.settings, "RUNTIME", Path(temporary)):
+            result = avatar_refresh.refresh_speakers(self._project(list(command)), 0, 500, runner=runner)
+            log = (Path(temporary) / "digest" / "avatar-refresh.log").read_text(encoding="utf-8")
+        return result, log
+
+    def test_refreshes_only_the_windows_speakers_and_the_group(self):
+        seen = {}
+
+        def runner(command, **kwargs):
+            seen["ids"] = Path(command[command.index("--ids-file") + 1]).read_text(encoding="utf-8").split()
+            return subprocess.CompletedProcess(command, 0, stdout='{"status": "ok"}')
+
+        result, log = self._run(runner)
+        self.assertEqual(seen["ids"], sorted(["u1", "u2", fx.CONVERSATION]))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn('"requested": 3', log)
+
+    def test_failure_is_logged_and_never_raises(self):
+        for runner in (lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout=""),
+                       lambda command, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(command, 240))):
+            with self.subTest(runner=runner):
+                shutil.rmtree(self.root, ignore_errors=True)
+                result, log = self._run(runner)
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("failed", log)
+
+    def test_not_configured_does_nothing(self):
+        self.assertEqual(avatar_refresh.refresh_speakers(self._project(None), 0, 500)["status"], "disabled")
 
 
 class SourceMediaTests(unittest.TestCase):

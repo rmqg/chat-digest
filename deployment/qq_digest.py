@@ -405,6 +405,7 @@ def _group_avatar(runtime: Path, messages: list[dict], group_id: int) -> dict:
     from PIL import Image
 
     avatars = {}
+    stale = 0
     cache_dir = runtime / 'qq-digest' / 'avatars'
     identities = [f'qq:{group_id}']
     identities.extend(dict.fromkeys(message['author_id'] for message in messages
@@ -413,27 +414,34 @@ def _group_avatar(runtime: Path, messages: list[dict], group_id: int) -> dict:
         is_group = identity.startswith('qq:')
         uin = str(group_id) if is_group else identity
         cache_path = cache_dir / (hashlib.sha256(identity.encode()).hexdigest() + '.image')
-        data = None
+        cached = None
         if cache_path.is_file() and not cache_path.is_symlink():
             try:
-                data = cache_path.read_bytes()
-                with Image.open(io.BytesIO(data)) as image:
+                cached = cache_path.read_bytes()
+                with Image.open(io.BytesIO(cached)) as image:
                     image.verify()
             except Exception:
-                data = None
-        if data is None:
-            try:
-                url = (f'https://p.qlogo.cn/gh/{uin}/{uin}/640' if is_group
-                       else f'https://q.qlogo.cn/headimg_dl?dst_uin={uin}&spec=100')
-                data = _fetch_image(url, avatar=True)
+                cached = None
+        try:  # always ask for the current avatar; the cache is only a fallback when the fetch fails
+            url = (f'https://p.qlogo.cn/gh/{uin}/{uin}/640' if is_group
+                   else f'https://q.qlogo.cn/headimg_dl?dst_uin={uin}&spec=100')
+            data = _fetch_image(url, avatar=True)
+            with Image.open(io.BytesIO(data)) as image:
+                image.verify()
+            if data != cached:
                 _private_file(cache_path, data)
-            except Exception:
-                avatars[identity] = {'available': False, 'reason': 'avatar_unavailable'}
-                continue
+        except Exception:
+            data = cached
+            stale += 1
+        if data is None:
+            avatars[identity] = {'available': False, 'reason': 'avatar_unavailable'}
+            continue
         with Image.open(io.BytesIO(data)) as image:
             kind = {'JPEG': 'jpeg', 'PNG': 'png', 'WEBP': 'webp', 'GIF': 'gif'}.get(image.format, 'png')
         avatars[identity] = {'available': True,
             'data_uri': f'data:image/{kind};base64,' + base64.b64encode(data).decode('ascii')}
+    if stale:
+        print(json.dumps({'event': 'avatar_refresh_failed', 'count': stale}), file=sys.stderr, flush=True)
     return avatars
 
 

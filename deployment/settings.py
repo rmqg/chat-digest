@@ -16,7 +16,7 @@ DEFAULTS: dict[str, Any] = {
     "report_prefix": "chat-digest", "docker_network": "chat-digest_default",
     "public_url": None, "image_origin_host": None, "daily_hour": 5, "timezone": "Asia/Shanghai",
     "worker_uid": 1000, "worker_gid": 1000,
-    "export": {"root": None},
+    "export": {"root": None, "refresh_avatars_command": None},
     "images": {"runtime": "chat-digest-runtime:2.0.0"},
 }
 

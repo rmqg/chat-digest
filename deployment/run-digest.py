@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import uuid
+import avatar_refresh
 from image_pipeline import process_window
 from model_fallback import providers as model_providers
 
@@ -95,6 +96,8 @@ def main():
                               timeout=120).returncode
     work = settings.RUNTIME / "digest"
     _sweep_stale_temp(work)
+    if not on_demand:
+        avatar_refresh.refresh_speakers(project, start, end)
     stage = process_window(start, end, scope="on-demand" if on_demand else "daily")
     if stage["status"] != "complete":
         print(json.dumps({**stage, "status": "images_pending"}, ensure_ascii=False), flush=True)

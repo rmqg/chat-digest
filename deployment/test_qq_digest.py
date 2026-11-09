@@ -1,4 +1,5 @@
 import argparse
+import base64
 import json
 import tempfile
 import unittest
@@ -130,6 +131,32 @@ class QQDigestInputTests(unittest.TestCase):
                     image_open.return_value.__enter__.return_value.format = 'PNG'
                     qq_digest._group_avatar(Path(root), [], 10001)
             self.assertIn('https://p.qlogo.cn/gh/10001/10001/640', fetch.call_args.args[0])
+    def test_avatar_is_refetched_every_report_and_cache_is_only_a_fallback(self):
+        import hashlib
+        import io
+        from PIL import Image
+
+        def png(color):
+            buffer = io.BytesIO()
+            Image.new('RGB', (4, 4), color).save(buffer, 'PNG')
+            return buffer.getvalue()
+
+        old, new = png((1, 2, 3)), png((200, 100, 50))
+        with tempfile.TemporaryDirectory() as root:
+            cache = Path(root) / 'qq-digest' / 'avatars'
+            cache.mkdir(parents=True)
+            cached = cache / (hashlib.sha256(b'qq:10001').hexdigest() + '.image')
+            cached.write_bytes(old)
+            with patch.object(qq_digest, '_fetch_image', return_value=new):
+                result = qq_digest._group_avatar(Path(root), [], 10001)
+            self.assertIn(base64.b64encode(new).decode('ascii'), result['qq:10001']['data_uri'])
+            self.assertEqual(cached.read_bytes(), new)
+            cached.write_bytes(old)
+            with patch.object(qq_digest, '_fetch_image', side_effect=OSError('down')), patch('sys.stderr', new=io.StringIO()) as err:
+                result = qq_digest._group_avatar(Path(root), [], 10001)
+            self.assertIn(base64.b64encode(old).decode('ascii'), result['qq:10001']['data_uri'])
+            self.assertIn('avatar_refresh_failed', err.getvalue())
+
     def test_attach_source_assets_adds_clickable_ref_without_changing_body_or_png(self):
         import hashlib
         import io

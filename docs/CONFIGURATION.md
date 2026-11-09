@@ -22,6 +22,7 @@ chat-digest 的配置全部是 `runtime/` 下的 JSON 文件和少量环境变�
 | 参数 | 类型 | 默认值 | 含义 | 示例 | 什么时候改 |
 |---|---|---|---|---|---|
 | `export.root` | 字符串（路径） | 无，必填 | chat-export/v1 导出目录在宿主上的路径，chat-digest 只读它。相对路径按项目根目录解析 | `"/srv/wechat-export/acct1/export"` | 导出工具换了输出目录时 |
+| `export.refresh_avatars_command` | 字符串数组 | 无 | 日报生成前刷新发言者头像的命令前缀，调用时追加 `--ids-file <路径>`（见 `CONTRACT.md`）。失败或超时（240 秒）时用导出里现有的头像，结果记在 `runtime/digest/avatar-refresh.log` | 导出方提供了刷新命令时配置，例如 wechat-export-send 的 `refresh-avatars` |
 | `group.conversation_id` | 字符串 | 无，必填 | 要总结的会话在导出里的 ID（manifest 的 `conversations[].id`），只能含 `A-Z a-z 0-9 _ . -` | `"g_1a2b3c"` | 换总结目标时；用 `chat-digest list-conversations` 查 |
 | `group.name` | 字符串 | 无，必填 | 会话名，只用来提示和核对。程序按 `conversation_id` 选会话；只有命令行没给 ID、配置里也没有 ID 时才按名字精确匹配，重名时要求给 ID。报告里显示的名字取自导出 | `"产品讨论群"` | 群改名后顺手改一下 |
 | `group.aliases` | 字符串数组 | `[]` | 同一个会话以前用过的 ID（例如 v1 的微信群 ID）。带这些 ID 的旧报告继续出现在网站首页，旧回执里的报告图片指纹继续用来排除自发报告 | `["…@chatroom"]` | 从 v1 迁移时填旧的 `group.id` |
