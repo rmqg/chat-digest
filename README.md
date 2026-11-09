@@ -18,6 +18,7 @@
 - **多模态证据**：图片先由视觉模型描述（可选 OCR），链接抓取正文后摘要，这些都作为“辅助证据”标明来源，不冒充群友发言。
 - **模型可替换、可兜底**：任何 OpenAI 兼容接口；所有模型调用都按同一条 fallback 链切换，失败后指数退避（上限 900 秒）一直重试。
 - **隔离运行**：每个处理阶段都在只读、无特权、限内存的一次性 Docker 容器里跑，不需要网络的阶段完全断网。
+- **可选 [Bark](https://github.com/Finb/Bark) 看门狗通知**：定时投递看门狗（`daily-watchdog.py`）支持可选配置 [Finb/Bark](https://github.com/Finb/Bark)（或自建 [bark-server](https://github.com/Finb/bark-server)），在日报生成或发送出现异常阶段时推送提醒。
 
 ## 它不是什么
 
