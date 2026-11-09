@@ -146,6 +146,19 @@ class AvatarTests(ExportFixture):
         self.assertFalse(result["u2"]["available"])
         self.assertEqual(result["u3"]["reason"], "avatar_not_exported")
 
+    def test_group_avatar_comes_from_the_manifest_and_is_optional(self):
+        self.root.mkdir(parents=True)
+        avatar = fx.add_media(self.root, png((200, 10, 10)))
+        fx.build_export(self.root, [], members=[{"id": "u1", "name": "甲"}])
+        result = report_avatars.collect_avatars(self.root, fx.CONVERSATION, [fx.CONVERSATION])
+        self.assertEqual(result[fx.CONVERSATION]["reason"], "avatar_not_exported")
+        path = self.root / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["conversations"][0]["avatar"] = avatar["path"]
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        result = report_avatars.collect_avatars(self.root, fx.CONVERSATION, [fx.CONVERSATION])
+        self.assertTrue(result[fx.CONVERSATION]["available"])
+
 
 class SourceMediaTests(unittest.TestCase):
     def test_reply_and_forward_image_signals(self):

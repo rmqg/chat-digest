@@ -36,6 +36,7 @@
 - `platform` 取值：`wechat`、`wecom`、`qq`、`other`。
 - `kind` 取值：`group`、`private`、`channel`、`other`。
 - manifest 必须原子替换：先写临时文件，再 rename。
+- `conversations[]` 可以带可选字段 `avatar`：会话自己的头像（群头像），相对 export-root 的路径，例如 `"avatar": "media/ab/<sha256>.jpg"`。旧版生产方不写这个字段；消费方读不到或文件不存在时按“没有头像”处理，不得报错，也不得按名字猜。
 
 ### conversations/*.jsonl（每行一个 JSON 对象）
 
@@ -63,6 +64,8 @@
  "members": [{"id": "u_9f8e", "name": "群昵称", "display_name": "本名或备注",
               "avatar": "media/cd/<sha256>.jpg"}]}
 ```
+
+`avatar` 可选，相对 export-root；生产方没有这个人的头像时不写。头像文件和其他媒体一样属于隐私数据，只留在本机。
 
 ### 规矩
 

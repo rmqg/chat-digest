@@ -60,7 +60,7 @@ class SyntheticDemoTests(unittest.TestCase):
             self.assertEqual((brief["edition"], review["edition"]), ("brief", "review"))
             self.assertEqual([quote["text"] for quote in brief["quotes"]], ["标签用防水纸打印，字写大一点，小朋友也能看清。"])
             self.assertTrue(all(person["tokens"] > 0 for person in brief["participants"]))
-            self.assertTrue(all(avatar["available"] for avatar in brief["avatars"].values()))
+            self.assertTrue(all(brief["avatars"][person["username"]]["available"] for person in brief["participants"]))
             self.assertEqual(brief["media_understanding"]["images"]["understood"], 1)
             self.assertTrue(Path(summary["editions"]["review"]["png"]).read_bytes().startswith(b"\x89PNG"))
             self.assertEqual(len(list((output / "outbox").glob("*.png"))), 1)

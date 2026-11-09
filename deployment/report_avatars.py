@@ -41,7 +41,7 @@ def collect_avatars(export_root: Path | str, conversation_id: str, ids: list[str
     members = chat_export.load_members(root, conversation)
     result = {}
     for sender in dict.fromkeys(ids):
-        member = members.get(sender)
+        member = conversation if sender == conversation["id"] else members.get(sender)
         relative = member.get("avatar") if isinstance(member, dict) else None
         if not isinstance(relative, str) or not relative:
             result[sender] = _unavailable("avatar_not_exported")

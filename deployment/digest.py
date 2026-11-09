@@ -547,7 +547,7 @@ def _run(args: argparse.Namespace) -> int:
         empty = {"one_line": "此时间窗口内，导出里该会话没有新增消息。", "topics": [], "quotes": []}
         summaries = {'brief': empty, 'review': empty}
     from report_avatars import collect_avatars
-    avatar_ids = list(dict.fromkeys([m["author_id"] for m in selected if m["author_id"]]))
+    avatar_ids = list(dict.fromkeys([conversation["conversation_id"], *[m["author_id"] for m in selected if m["author_id"]]]))
     avatars = collect_avatars(root, conversation["conversation_id"], avatar_ids, manifest=manifest)
     image_messages = [message for message in selected if message["type"] == "image"]
     understood_images = [message for message in image_messages if isinstance(message.get("image_understanding"), dict)
