@@ -351,7 +351,7 @@ def ranked_participants(report):
 
 
 def rank_value(row):
-    return int(row.get('tokens', row.get('count', row.get('messages', 0))) or 0), ('词元' if 'tokens' in row else '条')
+    return int(row.get('tokens', row.get('count', row.get('messages', 0))) or 0), ('token' if 'tokens' in row else '条')
 
 
 def rank_rows_html(report):
@@ -535,7 +535,10 @@ def _wrap_text(text, font, max_width):
         for token in _TOKEN.findall(paragraph):
             if not line and token.isspace():
                 continue
-            if font.getlength(line + token) <= max_width or (token in _NO_LINE_START and line):
+            width = font.getlength(line + token)
+            # Closing punctuation may hang past the edge by about one character, not more: a run such as
+            # "——————" or "？？？？？？" would otherwise leave the canvas.
+            if width <= max_width or (token in _NO_LINE_START and line and width <= max_width + font.size):
                 line += token
                 continue
             if font.getlength(token) > max_width:  # a single word wider than the line
@@ -797,7 +800,7 @@ class _PngPage:
         if not rows:
             return
         unit = rank_value(rows[0])[1]
-        self.section('活跃前20名', f'按发言{unit}数')
+        self.section('活跃前20名', '按发言 token 数' if unit == 'token' else f'按发言{unit}数')
         gap = 48
         cell = (self.content - gap) // 2
         name_font, value_font, number_font = self.face(33), self.face(29), self.face(26)

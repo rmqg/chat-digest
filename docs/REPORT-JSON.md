@@ -30,7 +30,7 @@
 | `quotes` | 数组 | 都有 | 金句，见下文；可以为空 |
 | `insights` | 数组 | QQ | 预留，目前为空数组 |
 | `timeline` | 数组 | QQ | 预留，目前为空数组 |
-| `participants` | 数组 | 都有 | 发过言的成员，`{"username", "name", "tokens"}`；`tokens` 是这个人正文的词元数，用来衡量“说了多少” |
+| `participants` | 数组 | 都有 | 发过言的成员，`{"username", "name", "tokens"}`；`tokens` 是这个人正文的 token 数，用来衡量“说了多少” |
 | `active_rank` | 数组 | 都有 | 按 `tokens` 从多到少排好的活跃榜，元素同上 |
 | `leaders` | 对象 | 都有 | 几个“之最”：`talk`（说得最多，元素同上）、`peak`（最热闹的时段，`{"name": 时段文字, "count": 消息数}`）；QQ 另有 `media`（发图最多）、`link`（发链接最多），都是 `{"name", "count"}`。任何一项都可能缺 |
 | `rhythm_buckets` | 数组 | 都有 | 消息节奏：按固定时长切的格子，`{"start_unix", "end_unix_exclusive", "count", "label"}`，`label` 是格子开始时刻的显示文字。默认 10 分钟一格，24 小时共 144 格 |

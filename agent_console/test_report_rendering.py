@@ -133,6 +133,35 @@ class PngLayoutTests(unittest.TestCase):
         self.assertIn('supercalifragilistic', renderer._wrap_text('测试 supercalifragilistic 单词', font, 800)[0])
         self.assertTrue(all(font.getlength(line) <= 400 for line in renderer._wrap_text('a' * 200, font, 400)))
 
+    def test_avatars_from_the_report_data_are_painted_and_missing_ones_fall_back(self):
+        buffer = io.BytesIO()
+        Image.new('RGB', (64, 64), (255, 0, 0)).save(buffer, 'PNG')
+        uri = 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode()
+        people = [{'username': 'a', 'name': '林小满', 'tokens': 90}]
+        def red_pixels(avatars):
+            image = draw(sample(participants=people, active_rank=people, avatars=avatars)).convert('RGB')
+            return sum(count for count, colour in image.getcolors(1 << 24) if colour[0] > 200 and colour[1] < 60 and colour[2] < 60)
+        self.assertGreater(red_pixels({'a': {'available': True, 'source': 'export', 'data_uri': uri}}), 500)
+        self.assertEqual(red_pixels({'a': {'available': False, 'data_uri': '', 'source': '', 'reason': 'avatar_not_exported'}}), 0)
+        self.assertEqual(red_pixels({}), 0)
+
+    def test_runs_of_closing_punctuation_stay_inside_the_margin(self):
+        size = 40
+        font = ImageFont.truetype(str(renderer.font_path()), size)
+        width = renderer.PNG_WIDTH - 2 * renderer.PNG_MARGIN
+        cases = ['这' * 20 + '—' * 40, '嗯' * 21 + '…' * 30, '哈' * 21 + '？' * 30, '好' * 23 + '。' * 30, '！' * 80, 'a b ' * 10 + '!' * 200]
+        for text in cases:
+            with self.subTest(text[:3]):
+                lines = renderer._wrap_text(text, font, width)
+                self.assertEqual(''.join(lines).replace(' ', ''), text.replace(' ', ''), 'no character may be lost')
+                self.assertLessEqual(max(font.getlength(line) for line in lines), width + size)
+                self.assertLess(width + size, width + renderer.PNG_MARGIN, 'one hanging character stays on the canvas')
+
+    def test_one_hanging_closing_mark_keeps_the_line_rule(self):
+        font = ImageFont.truetype(str(renderer.font_path()), 40)
+        lines = renderer._wrap_text('好' * 10 + '。后面还有文字', font, 400)
+        self.assertEqual(lines[0], '好' * 10 + '。')
+
     def test_missing_glyphs_are_dropped_but_spaces_survive(self):
         path = renderer.font_path()
         self.assertEqual(renderer._printable('开心🎉　快乐', path), '开心　快乐')

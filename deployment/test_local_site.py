@@ -6,11 +6,14 @@ import re
 import tempfile
 import threading
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import local_site
 import qq_report_site
+import report_site
+from timezones import project_zone
 
 PASSWORD = 'correct horse battery'
 HASH = 'a' * 64
@@ -299,6 +302,88 @@ class RebuildTests(unittest.TestCase):
                 self.assertTrue(site.ensure_built())
                 self.assertEqual(len(calls), 2)
                 self.assertTrue((output / 'index.html').is_file())
+
+
+class RendererThroughSiteTests(unittest.TestCase):
+    """The bundled renderer, the real site build and the real server together, outside the default zone."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.reports = self.root / 'runtime' / 'reports'
+        self.reports.mkdir(parents=True)
+        zone = project_zone('Asia/Tokyo')
+        self.end = int(datetime(2026, 10, 29, 5, 0, tzinfo=zone).timestamp())
+        spoken = self.end - 10 * 3600 + 7 * 60  # 19:07 in Tokyo, 18:07 in the renderer's fallback zone
+        reference = {'message_uid': 'm1', 'reference': 'M0001', 'author': '虚构成员', 'author_id': 'u1', 'timestamp': spoken,
+                     'type': 'text', 'text': '虚构的原始消息 <b>不是标记</b>'}
+        for edition in ('brief', 'review'):
+            report = {'edition': edition, 'chat_username': 'g_site', 'chat_display': '虚构群', 'day': '2026-10-29',
+                      'timezone': 'Asia/Tokyo', 'range_text': '虚构窗口', 'one_line': '虚构的一句话',
+                      'window': {'start_unix': self.end - 86400, 'end_unix_exclusive': self.end},
+                      'stats': {'messages': 9, 'members': 2}, 'leaders': {'peak': {'name': '10-28 19:00', 'count': 3}},
+                      'topics': [{'topic': '虚构话题', 'summary': '虚构概述', 'details': ['虚构细节'], 'start_unix': spoken, 'end_unix': spoken + 60,
+                                  'references': [reference]}],
+                      'quotes': [{'text': '虚构金句', 'speaker': '虚构成员', 'speaker_id': 'u1', 'source': reference}],
+                      'participants': [{'username': 'u1', 'name': '虚构成员', 'tokens': 321}],
+                      'active_rank': [{'username': 'u1', 'name': '虚构成员', 'tokens': 321}],
+                      'rhythm_buckets': [], 'rhythm_bucket_seconds': 600, 'avatars': {}}
+            stem = self.reports / f'demo-20261029-0500-{edition}'
+            stem.with_suffix('.json').write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
+            with patch.object(report_site.report_renderer, 'rounded_webfont_css',
+                              return_value="@font-face{font-family:D;src:url(data:font/woff2;base64,AAAA) format('woff2')}"):
+                stem.with_suffix('.html').write_text(report_site.report_renderer.render_html(report), encoding='utf-8')
+            stem.with_suffix('.png').write_bytes(b'png')
+        for name, value in (('TARGET_GROUP', 'g_site'), ('TARGET_IDS', {'g_site'}), ('REPORT_PREFIX', 'demo'), ('DAILY_HOUR', 5), ('DISPLAY_TZ', zone)):
+            patcher = patch.object(report_site, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        config = {'bind': '127.0.0.1', 'port': 0, 'username': 'reader', 'password_scrypt': qq_report_site.hash_password(PASSWORD)}
+        path = self.root / 'site.json'
+        path.write_text(json.dumps(config), encoding='utf-8')
+        site = local_site.WeChatSite(self.reports, self.root / 'runtime' / 'local-site')
+        self.server = local_site.create_server(local_site.load_config(path), site)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        _, headers, _ = request(self.port, 'POST', '/login', body=f'username=reader&password={PASSWORD.replace(" ", "+")}&next=/')
+        self.cookie = headers['Set-Cookie'].split(';', 1)[0]
+
+    def page(self, edition):
+        status, headers, body = request(self.port, 'GET', f'/wechat/reports/demo-20261029-0500-{edition}.html', cookie=self.cookie)
+        self.assertEqual(status, 200)
+        return headers, body.decode('utf-8')
+
+    def test_every_block_survives_the_site_build(self):
+        status, _, index = request(self.port, 'GET', '/wechat/', cookie=self.cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('reports/demo-20261029-0500-brief.html', index.decode())
+        self.assertIn('reports/demo-20261029-0500-review.html', index.decode())
+        for edition in ('brief', 'review'):
+            _, page = self.page(edition)
+            for text in ('虚构话题', '虚构概述', '虚构金句', '321 token', '虚构的一句话', '虚构细节'):
+                self.assertIn(text, page, edition)
+            self.assertIn('&lt;b&gt;不是标记&lt;/b&gt;', page)
+            self.assertNotIn('<b>不是标记', page)
+
+    def test_rebuilt_blocks_keep_the_report_zone(self):
+        for edition in ('brief', 'review'):
+            _, page = self.page(edition)
+            self.assertIn('19:07', page, 'topic range and source time')
+            self.assertNotIn('18:07', page, 'must not fall back to another zone')
+
+    def test_fonts_move_to_hashed_assets_the_page_policy_allows(self):
+        _, page = self.page('review')
+        self.assertNotIn('base64,AAAA', page)
+        policy = re.search(r'Content-Security-Policy" content="([^"]+)"', page)[1]
+        self.assertRegex(policy, r"font-src [^;]*'self'")
+        self.assertRegex(policy, r"img-src [^;]*'self'")
+        name = re.search(r'assets/([0-9a-f]{64}\.woff2)', page)[1]
+        status, headers, _ = request(self.port, 'GET', f'/wechat/assets/{name}', cookie=self.cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('immutable', headers['Cache-Control'])
 
 
 if __name__ == '__main__':

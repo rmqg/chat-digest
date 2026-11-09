@@ -304,8 +304,17 @@ class _TopicMarkup(HTMLParser):
             self.link = None
 
 
+def _report_zone(record: dict):
+    """The zone a report was written in; pages rebuilt here must show the times the report shows."""
+    try:
+        return project_zone(str(record['timezone'])) if record.get('timezone') else DISPLAY_TZ
+    except (KeyError, ValueError):
+        return DISPLAY_TZ
+
+
 def _refresh_topics(source: str, record: dict) -> str:
     topics = record.get('topics') or []
+    zone = _report_zone(record)
     parser = _TopicMarkup(source)
     edits = []
     for block in parser.blocks:
@@ -315,7 +324,7 @@ def _refresh_topics(source: str, record: dict) -> str:
         topic = topics[index]
         title = topic['topic']
         edits.append((*block['heading'], f'<span>{index + 1:02}</span>{html.escape(title)}'))
-        time_range = report_renderer.topic_time_range(topic)
+        time_range = report_renderer.topic_time_range(topic, zone)
         time_html = f'<p class="topic-time">{html.escape(time_range)}</p>' if time_range else ''
         start, end = block['time'] or (block['after_heading'], block['after_heading'])
         edits.append((start, end, time_html))
@@ -553,7 +562,7 @@ def _refresh_sources(source: str, record: dict, source_path: Path, reports_dir: 
                 ref.pop('image_unavailable_reason', None)
             elif ref.get('image_source_uids') or ref.get('type') == 'image':
                 ref['image_unavailable_reason'] = '该来源没有可验证的已归档原图，暂不可用'
-        contents = report_renderer.source_messages_html(refs, avatars)
+        contents = report_renderer.source_messages_html(refs, avatars, _report_zone(record))
         if (start, end) in parser.legacy_blocks:
             if refs:
                 contents = (f"<details><summary>来源 · {len(refs)} 条消息</summary>"
