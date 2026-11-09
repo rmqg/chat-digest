@@ -145,6 +145,24 @@ class PngLayoutTests(unittest.TestCase):
         self.assertEqual(red_pixels({'a': {'available': False, 'data_uri': '', 'source': '', 'reason': 'avatar_not_exported'}}), 0)
         self.assertEqual(red_pixels({}), 0)
 
+    def test_names_the_font_cannot_draw_do_not_leave_a_blank(self):
+        drawn = []
+        original = renderer._PngPage.write
+        def write(page_, x, baseline, text, font, fill, anchor='ls'):
+            drawn.append(str(text))
+            return original(page_, x, baseline, text, font, fill, anchor)
+        emoji = '\U0001F340\U0001F338'
+        report = sample(chat_display=emoji, participants=[{'username': 'a', 'name': emoji, 'tokens': 5}],
+                        quotes=[{'text': '短句', 'speaker': emoji, 'time': '10:00'}],
+                        topics=[{'topic': emoji, 'summary': '概述'}])
+        with patch.object(renderer._PngPage, 'write', write):
+            draw(report)
+        self.assertIn('群友', drawn, 'rank row')
+        self.assertIn('群友 · 10:00', drawn, 'quote line')
+        self.assertIn('聊天日报', drawn)
+        self.assertIn('未命名话题', drawn)
+        self.assertFalse([text for text in drawn if text.startswith(' ·')])
+
     def test_runs_of_closing_punctuation_stay_inside_the_margin(self):
         size = 40
         font = ImageFont.truetype(str(renderer.font_path()), size)

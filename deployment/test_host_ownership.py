@@ -1,10 +1,38 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import bootstrap
 import image_pipeline
+import settings
+
+
+class FirstInitTests(unittest.TestCase):
+    @unittest.skipIf(os.geteuid() == 0, 'needs an unprivileged user, as in docs/INSTALL.md')
+    def test_unprivileged_first_init_becomes_the_worker_and_keeps_the_template(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / 'runtime'
+            defaults = {**settings.DEFAULTS, 'worker_uid': os.geteuid() + 1, 'worker_gid': os.getegid() + 1}
+            with patch.object(settings, 'RUNTIME', runtime), patch.object(settings, 'DEFAULTS', defaults), patch('sys.stdout'):
+                bootstrap.init_runtime()
+            project = json.loads((runtime / 'project.json').read_text(encoding='utf-8'))
+            self.assertEqual((project['worker_uid'], project['worker_gid']), (os.geteuid(), os.getegid()))
+            template = json.loads((settings.ROOT / 'examples' / 'project.example.json').read_text(encoding='utf-8'))
+            self.assertEqual({key: value for key, value in project.items() if not key.startswith('worker_')},
+                             {key: value for key, value in template.items() if not key.startswith('worker_')})
+            self.assertEqual((runtime / 'project.json').stat().st_mode & 0o777, 0o600)
+            self.assertEqual((runtime / 'local-site.json').stat().st_mode & 0o777, 0o600)
+
+    def test_root_first_init_still_uses_the_configured_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / 'runtime'
+            with patch.object(settings, 'RUNTIME', runtime), patch('os.geteuid', return_value=0), patch('os.chown'), patch('sys.stdout'):
+                bootstrap.init_runtime()
+            project = json.loads((runtime / 'project.json').read_text(encoding='utf-8'))
+            self.assertEqual((project['worker_uid'], project['worker_gid']), (settings.DEFAULTS['worker_uid'], settings.DEFAULTS['worker_gid']))
 
 
 class HostOwnershipTests(unittest.TestCase):

@@ -608,6 +608,10 @@ class _PngPage:
     def clean(self, text, bold=False):
         return _printable(text, self.bold if bold else self.regular)
 
+    def visible_name(self, name):
+        """A nickname made only of characters the font lacks (often emoji) must not leave a blank."""
+        return self.clean(name).strip() or '群友'
+
     def write(self, x, baseline, text, font, fill, anchor='ls'):
         self.ops.append(lambda canvas, draw: draw.text((x, baseline), text, font=font, fill=fill, anchor=anchor))
 
@@ -652,7 +656,7 @@ class _PngPage:
         chat = _chat_name(self.report)
         self.initial(self.left, self.y, 52, chat)
         name_font = self.face(31, True)
-        self.write(self.left + 68, self.y + 38, _ellipsize(self.clean(chat, True), name_font, self.content - 68), name_font, DEEP)
+        self.write(self.left + 68, self.y + 38, _ellipsize(self.clean(chat, True).strip() or '聊天日报', name_font, self.content - 68), name_font, DEEP)
         self.y += 68
         title = f'{report_title(self.report)} · {_edition_label(self.report)}'
         size = next((candidate for candidate in (76, 68, 60) if self.face(candidate, True).getlength(self.clean(title, True)) <= self.content), 54)
@@ -743,7 +747,7 @@ class _PngPage:
         number = f'{index:02}'
         indent = 78
         time_range = topic_time_range(topic, self.timezone)
-        title = self.clean(topic.get('topic') or '未命名话题', True)
+        title = self.clean(topic.get('topic') or '', True).strip() or '未命名话题'
         self.write(self.left, self.y + 45, number, number_font, ACCENT_TEXT)
         reserve = time_font.getlength(time_range) + 24 if time_range else 0
         one_line = title_font.getlength(title) <= self.content - indent - reserve
@@ -791,7 +795,7 @@ class _PngPage:
                 when = time_text(source.get('timestamp'), '%m.%d %H:%M', self.timezone)
             self.avatar(self.left + 60, self.y, 44, quote.get('speaker_id') or source.get('author_id'), speaker)
             font = self.face(27)
-            line = self.clean(speaker + (f' · {when}' if when else ''))
+            line = self.visible_name(speaker) + self.clean(f' · {when}' if when else '')
             self.write(self.left + 118, self.y + 32, _ellipsize(line, font, self.content - 118), font, MUTED)
             self.y += 44
 
@@ -814,7 +818,7 @@ class _PngPage:
             value = str(rank_value(row)[0])
             self.write(x + cell, y + 41, value, value_font, DEEP, 'rs')
             room = cell - 106 - value_font.getlength(value) - 12
-            self.write(x + 106, y + 41, _ellipsize(self.clean(name), name_font, room), name_font, INK)
+            self.write(x + 106, y + 41, _ellipsize(self.visible_name(name), name_font, room), name_font, INK)
         self.y += half * 66
 
     def save(self, output_path):
