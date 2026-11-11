@@ -145,16 +145,36 @@ class PngLayoutTests(unittest.TestCase):
         self.assertEqual(red_pixels({'a': {'available': False, 'data_uri': '', 'source': '', 'reason': 'avatar_not_exported'}}), 0)
         self.assertEqual(red_pixels({}), 0)
 
+    def test_emoji_names_render_with_fallback_font_instead_of_becoming_qunyou(self):
+        drawn = []
+        original = renderer._PngPage.write
+        def write(page_, x, baseline, text, font, fill, anchor='ls'):
+            drawn.append(str(text))
+            return original(page_, x, baseline, text, font, fill, anchor)
+        emoji = '🍊'
+        mixed = '🍍㊗️'
+        report = sample(chat_display=emoji, participants=[
+            {'username': 'a', 'name': emoji, 'tokens': 9},
+            {'username': 'b', 'name': mixed, 'tokens': 5},
+        ], quotes=[{'text': '短句🎉', 'speaker': emoji, 'time': '10:00'}],
+            topics=[{'topic': emoji, 'summary': '概述'}])
+        with patch.object(renderer._PngPage, 'write', write):
+            draw(report)
+        self.assertIn('🍊', drawn, 'pure emoji rank row')
+        self.assertIn('🍍㊗', drawn, 'mixed emoji + CJK rank row')
+        self.assertIn('🍊 · 10:00', drawn, 'pure emoji quote speaker')
+        self.assertNotIn('群友', drawn)
+
     def test_names_the_font_cannot_draw_do_not_leave_a_blank(self):
         drawn = []
         original = renderer._PngPage.write
         def write(page_, x, baseline, text, font, fill, anchor='ls'):
             drawn.append(str(text))
             return original(page_, x, baseline, text, font, fill, anchor)
-        emoji = '\U0001F340\U0001F338'
-        report = sample(chat_display=emoji, participants=[{'username': 'a', 'name': emoji, 'tokens': 5}],
-                        quotes=[{'text': '短句', 'speaker': emoji, 'time': '10:00'}],
-                        topics=[{'topic': emoji, 'summary': '概述'}])
+        unassigned = '\uE000\uE001'
+        report = sample(chat_display=unassigned, participants=[{'username': 'a', 'name': unassigned, 'tokens': 5}],
+                        quotes=[{'text': '短句', 'speaker': unassigned, 'time': '10:00'}],
+                        topics=[{'topic': unassigned, 'summary': '概述'}])
         with patch.object(renderer._PngPage, 'write', write):
             draw(report)
         self.assertIn('群友', drawn, 'rank row')
@@ -162,7 +182,6 @@ class PngLayoutTests(unittest.TestCase):
         self.assertIn('聊天日报', drawn)
         self.assertIn('未命名话题', drawn)
         self.assertFalse([text for text in drawn if text.startswith(' ·')])
-
     def test_runs_of_closing_punctuation_stay_inside_the_margin(self):
         size = 40
         font = ImageFont.truetype(str(renderer.font_path()), size)
@@ -180,10 +199,10 @@ class PngLayoutTests(unittest.TestCase):
         lines = renderer._wrap_text('好' * 10 + '。后面还有文字', font, 400)
         self.assertEqual(lines[0], '好' * 10 + '。')
 
-    def test_missing_glyphs_are_dropped_but_spaces_survive(self):
+    def test_missing_glyphs_are_dropped_but_spaces_and_emoji_survive(self):
         path = renderer.font_path()
-        self.assertEqual(renderer._printable('开心🎉　快乐', path), '开心　快乐')
-
+        self.assertEqual(renderer._printable('开心🎉\uE000　快乐', path), '开心🎉　快乐')
+        self.assertEqual(renderer._printable('开心🎉　快乐', path, None), '开心　快乐')
 
 class HtmlTests(unittest.TestCase):
     def test_markup_is_balanced_and_keeps_the_hooks_the_site_build_rewrites(self):

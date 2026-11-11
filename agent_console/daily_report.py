@@ -75,11 +75,11 @@ PAGE_CSS = f"""
 .digest-v2 .people{{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;color:{MUTED};font-size:13px}}.digest-v2 .people .avatar{{width:26px;height:26px;font-size:11px}}.digest-v2 .topic details{{margin-top:10px}}
 .digest-v2 blockquote{{position:relative;margin:18px 0 0;padding-left:34px}}.digest-v2 blockquote::before{{content:'“';position:absolute;right:calc(100% - 28px);top:-6px;font-size:52px;line-height:1;font-weight:700;color:{ACCENT}}}
 .digest-v2 blockquote p{{margin:0;font-size:20px;line-height:1.55;overflow-wrap:anywhere}}.digest-v2 blockquote footer{{margin-top:4px;color:{MUTED};font-size:14px}}.digest-v2 blockquote details{{margin-top:2px}}
-.digest-v2 .rank{{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 28px;counter-reset:rank}}.digest-v2 .rank li{{display:flex;align-items:center;gap:10px;min-width:0;padding:5px 0;counter-increment:rank}}
+.digest-v2 .rank{{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(var(--rows,10),auto);grid-auto-flow:column;gap:2px 28px;counter-reset:rank}}.digest-v2 .rank li{{display:flex;align-items:center;gap:10px;min-width:0;padding:5px 0;counter-increment:rank}}
 .digest-v2 .rank li::before{{content:counter(rank,decimal-leading-zero);width:20px;flex:none;color:{MUTED};font-size:13px}}.digest-v2 .rank-name{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.digest-v2 .rank strong{{flex:none;font-weight:400;font-size:14px;color:{DEEP}}}
 .digest-v2 .generated{{margin-top:44px;padding-top:14px;border-top:1px solid {LINE};color:{MUTED};font-size:13px}}
 @media(min-width:600px){{.digest-v2 .topic h3{{padding-right:128px}}.digest-v2 .topic-time{{position:absolute;right:0;top:22px;margin:0}}}}
-@media(max-width:599px){{body.digest-v2{{font-size:16px}}.digest-v2 .page{{padding:28px 16px 48px}}.digest-v2 h1{{font-size:32px}}.digest-v2 .stats{{grid-template-columns:repeat(2,minmax(0,1fr))}}.digest-v2 .lede{{font-size:19px}}.digest-v2 .rank{{grid-template-columns:minmax(0,1fr)}}}}
+@media(max-width:599px){{body.digest-v2{{font-size:16px}}.digest-v2 .page{{padding:28px 16px 48px}}.digest-v2 h1{{font-size:32px}}.digest-v2 .stats{{grid-template-columns:repeat(2,minmax(0,1fr))}}.digest-v2 .lede{{font-size:19px}}.digest-v2 .rank{{grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-auto-flow:row}}}}
 """
 CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
 
@@ -163,6 +163,20 @@ def bold_font_path():
     bundled = Path(__file__).resolve().parent.parent / 'assets' / 'fonts' / 'ResourceHanRoundedCN-Bold.ttf'
     return bundled if not os.environ.get('CHAT_DIGEST_FONT') and bundled.is_file() else font_path()
 
+
+
+def emoji_font_path():
+    """Optional bundled or system monochrome TrueType emoji font for Pillow fallback."""
+    here = Path(__file__).resolve().parent
+    for candidate in (
+        here.parent / 'assets' / 'fonts' / 'NotoEmoji-Regular.ttf',
+        here / 'NotoEmoji-Regular.ttf',
+        Path('/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf'),
+        Path('/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf'),
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 def build_rhythm_buckets(timestamps, start, end):
     start, end = int(start), int(end)
@@ -493,8 +507,10 @@ def render_html(report):
     quotes = _quotes(report)
     if quotes:
         parts.append('<section><h2>群友金句</h2>' + ''.join(_quote_html(quote, report, timezone) for quote in quotes) + '</section>')
-    if ranked_participants(report):
-        parts.append('<section><h2>活跃前20名</h2><ol class="rank">' + rank_rows_html(report) + '</ol></section>')
+    ranked = ranked_participants(report)
+    if ranked:
+        half = (len(ranked) + 1) // 2
+        parts.append(f'<section><h2>活跃前20名</h2><ol class="rank" style="--rows:{half}">' + rank_rows_html(report) + '</ol></section>')
     generated = _generated_text(report, timezone)
     if generated:
         parts.append(f'<footer class="generated">生成于 {escape(generated)}</footer>')
@@ -516,15 +532,65 @@ def _font(path, size):
     return ImageFont.truetype(str(path), size)
 
 
+_IGNORED_EMOJI_JOINERS = {'\uFE0E', '\uFE0F', '\u200D'}
+
+
 @lru_cache(maxsize=None)
 def _glyph_available(path, char):
     """Pillow cannot fall back between fonts, so glyphs the font lacks would print as empty boxes."""
+    if path is None or char in _IGNORED_EMOJI_JOINERS:
+        return False
     font = _font(path, 32)
     return bytes(font.getmask(char)) != bytes(font.getmask('\U0010FFFF'))
 
 
-def _printable(text, path):
-    return ''.join(char for char in str(text) if char.isspace() or (char.isprintable() and _glyph_available(path, char)))
+def _printable(text, path, emoji_path=True):
+    if emoji_path is True:
+        emoji_path = emoji_font_path()
+    out = []
+    for char in str(text):
+        if char in _IGNORED_EMOJI_JOINERS:
+            continue
+        if char.isspace() or (
+            char.isprintable()
+            and (_glyph_available(path, char) or (emoji_path is not None and _glyph_available(emoji_path, char)))
+        ):
+            out.append(char)
+    return ''.join(out)
+
+
+@lru_cache(maxsize=8192)
+def _font_runs(text, font, emoji_path=True):
+    """Split text into contiguous (segment, ImageFont) runs using emoji fallback when primary lacks a glyph."""
+    text = str(text)
+    if not text:
+        return ()
+    if emoji_path is True:
+        emoji_path = emoji_font_path()
+    primary_path = getattr(font, 'path', None)
+    if emoji_path is None or primary_path is None:
+        return ((text, font),)
+    runs = []
+    current = []
+    current_is_emoji = None
+    for char in text:
+        use_emoji = (not char.isspace()) and (not _glyph_available(primary_path, char)) and _glyph_available(emoji_path, char)
+        if current_is_emoji is not None and use_emoji != current_is_emoji:
+            runs.append((''.join(current), _font(emoji_path, font.size) if current_is_emoji else font))
+            current = []
+        current.append(char)
+        current_is_emoji = use_emoji
+    if current:
+        runs.append((''.join(current), _font(emoji_path, font.size) if current_is_emoji else font))
+    return tuple(runs)
+
+
+@lru_cache(maxsize=16384)
+def _measure(text, font, emoji_path=True):
+    runs = _font_runs(text, font, emoji_path)
+    if len(runs) == 1 and runs[0][1] is font:
+        return font.getlength(text)
+    return sum(seg_font.getlength(seg) for seg, seg_font in runs)
 
 
 def _wrap_text(text, font, max_width):
@@ -535,15 +601,15 @@ def _wrap_text(text, font, max_width):
         for token in _TOKEN.findall(paragraph):
             if not line and token.isspace():
                 continue
-            width = font.getlength(line + token)
+            width = _measure(line + token, font)
             # Closing punctuation may hang past the edge by about one character, not more: a run such as
             # "——————" or "？？？？？？" would otherwise leave the canvas.
             if width <= max_width or (token in _NO_LINE_START and line and width <= max_width + font.size):
                 line += token
                 continue
-            if font.getlength(token) > max_width:  # a single word wider than the line
+            if _measure(token, font) > max_width:  # a single word wider than the line
                 for char in token:
-                    if line and font.getlength(line + char) > max_width:
+                    if line and _measure(line + char, font) > max_width:
                         lines.append(line)
                         line = ''
                     line += char
@@ -560,9 +626,9 @@ def _wrap_text(text, font, max_width):
 
 def _ellipsize(text, font, max_width):
     text = str(text)
-    if font.getlength(text) <= max_width:
+    if _measure(text, font) <= max_width:
         return text
-    while text and font.getlength(text + '…') > max_width:
+    while text and _measure(text + '…', font) > max_width:
         text = text[:-1]
     return text + '…'
 
@@ -595,7 +661,7 @@ class _PngPage:
     def __init__(self, report):
         self.report = report
         self.timezone = _report_timezone(report)
-        self.regular, self.bold = font_path(), bold_font_path()
+        self.regular, self.bold, self.emoji = font_path(), bold_font_path(), emoji_font_path()
         self.width = PNG_WIDTH
         self.left, self.right = PNG_MARGIN, PNG_WIDTH - PNG_MARGIN
         self.content = self.right - self.left
@@ -606,14 +672,28 @@ class _PngPage:
         return _font(self.bold if bold else self.regular, size)
 
     def clean(self, text, bold=False):
-        return _printable(text, self.bold if bold else self.regular)
+        return _printable(text, self.bold if bold else self.regular, self.emoji)
 
     def visible_name(self, name):
-        """A nickname made only of characters the font lacks (often emoji) must not leave a blank."""
+        """A nickname made only of characters every font lacks must not leave a blank."""
         return self.clean(name).strip() or '群友'
 
     def write(self, x, baseline, text, font, fill, anchor='ls'):
-        self.ops.append(lambda canvas, draw: draw.text((x, baseline), text, font=font, fill=fill, anchor=anchor))
+        runs = _font_runs(text, font, self.emoji)
+        if len(runs) <= 1:
+            run_font = runs[0][1] if runs else font
+            self.ops.append(lambda canvas, draw, f=run_font: draw.text((x, baseline), text, font=f, fill=fill, anchor=anchor))
+            return
+        total = sum(seg_font.getlength(seg) for seg, seg_font in runs)
+        horiz = anchor[0] if anchor else 'l'
+        vert = anchor[1:] if len(anchor) > 1 else 's'
+        start_x = x - total if horiz == 'r' else (x - total / 2 if horiz == 'm' else x)
+        def op(canvas, draw):
+            cur_x = start_x
+            for seg, seg_font in runs:
+                draw.text((cur_x, baseline), seg, font=seg_font, fill=fill, anchor='l' + vert)
+                cur_x += seg_font.getlength(seg)
+        self.ops.append(op)
 
     def paragraph(self, text, size, fill, line_height, *, bold=False, x=None, width=None):
         x = self.left if x is None else x
@@ -636,8 +716,12 @@ class _PngPage:
 
     def initial(self, x, y, size, name):
         from PIL import Image
-        font = self.face(round(size * 0.46), True)
+        size_px = round(size * 0.46)
         letter = _initial(self.clean(name, True))
+        if self.emoji is not None and not _glyph_available(self.bold, letter) and _glyph_available(self.emoji, letter):
+            font = _font(self.emoji, size_px)
+        else:
+            font = self.face(size_px, True)
         disc = Image.new('RGB', (size, size), SOFT)
         def op(canvas, draw):
             canvas.paste(disc, (x, y), _circle_mask(size))

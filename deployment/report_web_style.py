@@ -50,13 +50,14 @@ READER_STYLE = f"""<style>
 {_OLD} .lede,{_OLD} .summary,{_OLD} .topic li,{_OLD} blockquote p{{font-size:18px}}{_OLD} nav a{{font-size:18px}}{_OLD} .topic h3{{font-size:24px}}{_OLD} .topic h3 span{{font-size:18px}}
 {_OLD} blockquote footer,{_OLD} .sources p{{font-size:16px}}{_OLD} details,{_OLD} .sources b,{_OLD} .sources small{{font-size:14px}}
 {_OLD} .topic-time{{font-size:14px;line-height:1.5;color:{MUTED};margin:8px 0 14px}}
+.digest-v2 .rank,{_OLD} .rank{{grid-template-rows:repeat(var(--rows,10),auto);grid-auto-flow:column}}
 {_OLD} .rank li{{grid-template-columns:40px 48px minmax(0,1fr) 80px;font-size:18px}}{_OLD} .rank li b{{grid-column:auto;font-size:18px}}
 {_OLD} nav>ol{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 40px;margin:18px 0 0;padding-inline-start:28px}}
 {_OLD} nav>ol>li{{min-width:0;margin:0;padding-left:4px}}{_OLD} nav>ol>li::marker{{color:{MUTED};font-variant-numeric:tabular-nums}}
 {_OLD} nav>ol>li>a{{display:block;min-height:44px;padding:6px 10px;line-height:1.6;text-decoration:none;overflow-wrap:anywhere;border-radius:8px}}
 {_OLD} nav>ol>li>a:hover{{background:#F4F1FB;color:{DEEP}}}{_OLD} nav>ol>li>a:focus-visible{{outline:2px solid {DEEP};outline-offset:2px}}
 @media(max-width:760px){{.site-home{{padding:12px 16px 0}}{_OLD} nav>ol{{grid-template-columns:minmax(0,1fr);gap:10px;margin-top:16px;padding-inline-start:26px}}
-{_OLD} main,{_OLD} main.page{{padding:16px}}{_OLD} h1{{font-size:40px}}{_OLD} .stats{{grid-template-columns:repeat(2,minmax(0,1fr))}}{_OLD} .rank li{{grid-template-columns:30px 40px minmax(0,1fr) 60px;gap:8px}}{_OLD} .rank .avatar{{width:36px;height:36px}}{_OLD} .topic,{_OLD} blockquote,{_OLD} nav{{padding:16px}}{_OLD} .topic ul{{padding-left:22px}}{_OLD} .leader-grid{{grid-template-columns:1fr}}}}
+{_OLD} main,{_OLD} main.page{{padding:16px}}{_OLD} h1{{font-size:40px}}{_OLD} .stats{{grid-template-columns:repeat(2,minmax(0,1fr))}}.digest-v2 .rank,{_OLD} .rank{{grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-auto-flow:row}}{_OLD} .rank li{{grid-template-columns:30px 40px minmax(0,1fr) 60px;gap:8px}}{_OLD} .rank .avatar{{width:36px;height:36px}}{_OLD} .topic,{_OLD} blockquote,{_OLD} nav{{padding:16px}}{_OLD} .topic ul{{padding-left:22px}}{_OLD} .leader-grid{{grid-template-columns:1fr}}}}
 </style>"""
 
 

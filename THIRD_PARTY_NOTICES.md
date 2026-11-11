@@ -7,7 +7,7 @@
 | 路径 | 来源与固定版本 | 许可证 | 保留的声明 |
 |---|---|---|---|
 | `assets/fonts/ResourceHanRoundedCN-*.ttf`、`*.woff2` | [Resource Han Rounded v0.990](https://github.com/CyanoHao/Resource-Han-Rounded/releases/tag/v0.990) | SIL Open Font License 1.1 | `assets/fonts/OFL-License.txt` |
-
+| `assets/fonts/NotoEmoji-Regular.ttf` | [Google Noto Emoji](https://github.com/google/fonts/tree/main/ofl/notoemoji) | SIL Open Font License 1.1 | `assets/fonts/OFL-License.txt` |
 字体的版权声明和保留字体名称限制只适用于字体文件本身，字体不因放在本仓库而改用 MIT。用这套字体渲染出来的报告不受 OFL 约束，但单独再分发字体文件时必须带上 OFL 声明。
 
 `agent_console/daily_report.py` 是 clean-room 实现：编写时只参考了旧版渲染器的外观（合成数据画出的样图和只描述画面的文字说明），没有打开或使用旧版及其他项目的渲染器代码，属于本项目的原创代码。
