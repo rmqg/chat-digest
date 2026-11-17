@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate the configured conversation's brief and review reports using the pinned local runtime image."""
 import argparse
+import os
 import re
 import json
 from pathlib import Path
@@ -9,14 +10,13 @@ import subprocess
 import sys
 import time
 import uuid
-import avatar_refresh
-from image_pipeline import process_window
+from image_pipeline import delivered_fingerprints, _private_json
 from model_fallback import providers as model_providers
 
 import settings
 import render_plugin
 ROOT = Path(__file__).resolve().parents[1]
-STALE_TEMP_PREFIXES = ('.digest-', '.images-', '.web-context-', '.prepared-images-', '.image-stage-')
+STALE_TEMP_PREFIXES = ('.digest-', '.images-', '.web-context-', '.prepared-images-', '.image-stage-', 'delivery-snapshot-')
 STALE_TEMP_SECONDS = 6 * 3600
 
 
@@ -67,9 +67,10 @@ def main():
     if not on_demand and (args.start is not None or args.hours <= 0):
         raise SystemExit("hours must be positive; explicit start requires request-id")
     end = args.end if args.end is not None else int(time.time())
+    cpus = str(min(max(int(os.cpu_count() or 1), 1), 2))
     common = ["docker", "run", "--rm", "--pull", "never", "--read-only", "--user",
               f"{project['worker_uid']}:{project['worker_gid']}", "--cap-drop", "ALL", "--security-opt",
-              "no-new-privileges:true", "--memory", "1g", "--cpus", "1", "--tmpfs", "/tmp:rw,nosuid,size=64m",
+              "no-new-privileges:true", "--memory", "1g", "--cpus", cpus, "--tmpfs", "/tmp:rw,nosuid,size=64m",
               "--env", "PYTHONPATH=/source/agent_console:/tool",
               "--env", "CHAT_DIGEST_CONFIG=/runtime/project.json", "--env", "TZ=" + project["timezone"]]
     mounts = [(ROOT / "agent_console", "/source/agent_console", True),
@@ -96,33 +97,60 @@ def main():
                               timeout=120).returncode
     work = settings.RUNTIME / "digest"
     _sweep_stale_temp(work)
-    if not on_demand:
-        avatar_refresh.refresh_speakers(project, start, end)
-    stage = process_window(start, end, scope="on-demand" if on_demand else "daily")
-    if stage["status"] != "complete":
-        print(json.dumps({**stage, "status": "images_pending"}, ensure_ascii=False), flush=True)
-        return 2
-    window += ["--exclude-own-text-sha256", _work_path(stage["notice_hashes_path"], work),
-               "--exclude-own-image-sha256", _work_path(stage["image_hashes_path"], work),
-               "--exclude-message-ids", _work_path(stage["message_ids_path"], work)]
-    models = ["--mount", f"type=bind,src={settings.RUNTIME / 'gemini-model.json'},dst=/models/gemini.json,readonly"]
-    container = "chat-digest-run-" + uuid.uuid4().hex[:12]
-    command = common + ["--name", container, "--network", project["docker_network"]] + models + [
-        image, "/tool/digest.py", *window, "--output-dir", "/reports", "--model-config", "/models/gemini.json",
-        "--image-understanding", _work_path(stage["understanding_path"], work),
-        "--auxiliary-context", _work_path(stage["auxiliary_path"], work), *render_plugin.cli_args(render_inside)]
-    model_config = json.loads((settings.RUNTIME / "gemini-model.json").read_text(encoding="utf-8"))
-    timeout = 900 * len(model_providers(model_config))  # every configured provider may be tried once
+    # Enrichment runs independently. Delivery reads a snapshot and never waits for
+    # image-stage locks, downloads, OCR, web requests or avatar refreshes.
+    snapshot = work / ('delivery-snapshot-' + uuid.uuid4().hex)
+    snapshot.mkdir(mode=0o755, parents=True)
     try:
-        result = subprocess.run(command, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # The docker client was killed, not the container; remove it so it stops holding memory.
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=30)
-        print(json.dumps({"status": "failed", "stage": "digest", "error": f"digest container timed out after {timeout}s"}), flush=True)
-        return 1
-    if result.returncode == 0:
-        _trigger_report_publish()
-    return result.returncode
+        stage = {}
+        delivered = delivered_fingerprints(project)
+        for key, values in (("notice_hashes_path", delivered['texts']),
+                            ("image_hashes_path", delivered['images']),
+                            ("message_ids_path", delivered['message_ids'])):
+            path = snapshot / (key + '.json')
+            _private_json(path, values)
+            stage[key] = str(path)
+        cached = {}
+        try:
+            cached = json.loads((work / 'realtime-images-result.json').read_text())
+        except (OSError, ValueError):
+            pass
+        for key in ('understanding_path', 'auxiliary_path'):
+            value = {}
+            try:
+                source = Path(cached[key]).resolve(strict=True)
+                if source.is_relative_to(work.resolve()) and source.is_file():
+                    loaded = json.loads(source.read_text())
+                    if isinstance(loaded, dict):
+                        value = loaded
+            except (KeyError, TypeError, OSError, ValueError):
+                pass
+            path = snapshot / (key + '.json')
+            _private_json(path, value)
+            stage[key] = str(path)
+        window += ["--exclude-own-text-sha256", _work_path(stage["notice_hashes_path"], work),
+                   "--exclude-own-image-sha256", _work_path(stage["image_hashes_path"], work),
+                   "--exclude-message-ids", _work_path(stage["message_ids_path"], work)]
+        models = ["--mount", f"type=bind,src={settings.RUNTIME / 'gemini-model.json'},dst=/models/gemini.json,readonly"]
+        container = "chat-digest-run-" + uuid.uuid4().hex[:12]
+        command = common + ["--name", container, "--network", project["docker_network"]] + models + [
+            image, "/tool/digest.py", *window, "--output-dir", "/reports", "--model-config", "/models/gemini.json",
+            "--image-understanding", _work_path(stage["understanding_path"], work),
+            "--auxiliary-context", _work_path(stage["auxiliary_path"], work), *render_plugin.cli_args(render_inside)]
+        model_config = json.loads((settings.RUNTIME / "gemini-model.json").read_text(encoding="utf-8"))
+        timeout = 900 * len(model_providers(model_config))  # every configured provider may be tried once
+        try:
+            result = subprocess.run(command, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # The docker client was killed, not the container; remove it so it stops holding memory.
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=30)
+            print(json.dumps({"status": "failed", "stage": "digest", "error": f"digest container timed out after {timeout}s"}), flush=True)
+            return 1
+        if result.returncode == 0:
+            _trigger_report_publish()
+        return result.returncode
+    finally:
+        shutil.rmtree(snapshot, ignore_errors=True)
 
 
 if __name__ == "__main__":

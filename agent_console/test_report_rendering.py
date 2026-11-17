@@ -250,6 +250,20 @@ class HtmlTests(unittest.TestCase):
         self.assertIn('class="people"', page(sample()))
         self.assertNotIn('class="people"', page(sample(edition='brief')))
 
+    def test_repeated_inline_avatars_are_deduplicated_in_style(self):
+        uri = avatar_uri()
+        refs = [{'author': '林小满', 'author_id': 'a', 'timestamp': BASE + i, 'type': 'text', 'text': f'第{i}条'}
+                for i in range(50)]
+        report = sample(topics=[{'topic': '高频话题', 'summary': '概述', 'participant_ids': ['a'],
+                                 'start_unix': BASE, 'end_unix': BASE + 60, 'references': refs}])
+        report['avatars'] = {'a': {'available': True, 'data_uri': uri}}
+        html = page(report)
+        self.assertEqual(html.count(uri), 1)
+        self.assertNotIn('<script', html)
+        reader = Structure()
+        reader.feed(html)
+        self.assertEqual((reader.errors, reader.stack), ([], []))
+
 
 if __name__ == '__main__':
     unittest.main()

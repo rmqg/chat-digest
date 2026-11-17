@@ -243,6 +243,19 @@ class OnDemandQueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 on_demand._config()
 
+    def test_explicit_duration_command_interprets_without_container(self):
+        rid = "d" * 64
+        job = {"request_id": rid, "status": "queued", "attempts": 0,
+               "candidate": {"request_id": rid, "command_text": "@FixtureBot 总结过去 8 小时", "trigger_timestamp": 1_800_000_000}}
+        self.jobs.mkdir(parents=True, exist_ok=True)
+        path = self.jobs / f"{rid}.json"
+        on_demand._atomic_json(path, job)
+        with patch.object(on_demand, "_container_call", side_effect=AssertionError("must use fast path")):
+            intent = on_demand._interpret(job)
+        self.assertEqual(intent, {"status": "accepted", "request_id": rid, "duration_seconds": 28800,
+                                  "start": 1_800_000_000 - 28800, "end": 1_800_000_000})
+        self.assertEqual(json.loads(path.read_text())["status"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()

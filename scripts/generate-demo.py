@@ -120,8 +120,9 @@ def _summary(contents: dict, edition: str) -> dict:
                "message_ids": refs[:3] + refs[-1:]},
               {"title": "分区安排与示意图", "summary": "转发了虚构的分区安排，并附上一张合成示意图和一篇参考链接。",
                "details": [] if edition == "brief" else ["A区种香草，B区种花苗。"], "message_ids": refs[3:6]}]
+    by_ref = {message["reference"]: message.get("text", "") for message in contents.get("messages", [])}
     quotes = [item["candidate_index"] for item in contents.get("quote_candidates", [])
-              if "防水纸" in item["text"]][:1]
+              if "防水纸" in item.get("text", by_ref.get(item.get("reference"), ""))][:1]
     return {"one_line": "合成示例：成员确定周六上午的社区花园活动，并分好了准备工作。", "topics": topics, "quotes": quotes}
 
 

@@ -174,8 +174,8 @@ _SUMMARY_REVIEW_PROMPT = (
 
 
 
-IMAGE_REFUSED_TEXT = '（图片描述模型拒绝处理这张图片，内容未知）'
-IMAGE_MISSING_TEXT = '（导出里没有这张图片的原图，内容未知）'
+IMAGE_REFUSED_TEXT = '（图片暂无法识别）'
+IMAGE_MISSING_TEXT = '（原图未抓取到）'
 
 
 def _visible_messages(messages):
@@ -203,16 +203,22 @@ def _attach_image_understanding(selected, image_understanding):
         if is_refused_image(entry):
             message["image_understanding"] = {"model": None, "source_quality": entry.get("source_quality"), "refused": True,
                                                "description": IMAGE_REFUSED_TEXT, "visible_text": "", "facts": [],
-                                               "uncertainties": ["图片描述模型拒绝处理此图，内容未知，不要猜测"]}
+                                               "uncertainties": ["图片暂无法解析"]}
             continue
         if isinstance(entry, dict) and entry.get("status") == "unavailable" and entry.get("source_quality") == "missing":
             message["image_understanding"] = {"model": None, "source_quality": "missing", "missing": True,
                                                "description": IMAGE_MISSING_TEXT, "visible_text": "", "facts": [],
-                                               "uncertainties": ["原图缺失，内容未知，不要猜测"]}
+                                               "uncertainties": ["原图暂未获取"]}
             continue
         if not (isinstance(entry, dict) and entry.get("status") == "success" and isinstance(entry.get("result"), dict)
                 and entry.get("source_quality") in {"original", "client_full"}):
-            raise ValueError("image context is incomplete for the selected report window")
+            message["image_understanding"] = {
+                "model": None, "source_quality": "pending", "pending": True,
+                "description": "（图片处理中）",
+                "visible_text": "", "facts": [],
+                "uncertainties": ["图片仍在处理"],
+            }
+            continue
         message["image_understanding"] = {"model": entry.get("model"), "source_quality": entry.get("source_quality"),
                                            **entry["result"]}
 
@@ -253,22 +259,22 @@ def _summary_with_cache(config_path, messages, runtime, *, edition):
     prompt = _SUMMARY_BRIEF_PROMPT if edition == 'brief' else _SUMMARY_REVIEW_PROMPT
     contents = {'messages': _visible_messages(sorted(messages, key=lambda message: (message['timestamp'], message['reference'])))}
     candidates = _quote_candidates(messages)
-    wire_candidates = [{'candidate_index': index, 'reference': item['message_id'],
-                        'timestamp': item['timestamp'], 'author': item['author'], 'text': item['text']}
+    wire_candidates = [{'candidate_index': index, 'reference': item['message_id']}
                        for index, item in enumerate(candidates)]
     contents['quote_candidates'] = wire_candidates
     request_config = {key: config[key] for key in ('base_url', 'model')}
     semantic_config = json.dumps({'edition': edition, 'prompt': prompt, 'schema': _SUMMARY_SCHEMA,
                                   'temperature': 0.2, 'max_tokens': 65536}, sort_keys=True, ensure_ascii=False)
-    fingerprint = _cache_key('summary-semantic-v2-' + edition, request_config, semantic_config, contents)
+    fingerprint = _cache_key('summary-semantic-v3-' + edition, request_config, semantic_config, contents)
     path = runtime / 'summary-cache' / (edition + '-' + fingerprint + '.json')
     raw = _cached_result(path, config)
     cache_hit = raw is not None
     provider_metadata = {}
     if not cache_hit:
+        effort = config.get(f'{edition}_reasoning_effort') or config.get('reasoning_effort')
         raw = _structured_request(config, _SUMMARY_SCHEMA, prompt, contents,
                                   runtime / 'summary-diagnostics', 'chat_group_' + edition,
-                                  result_metadata=provider_metadata)
+                                  result_metadata=provider_metadata, reasoning_effort=effort)
     try:
         if not isinstance(raw, dict):
             raise ValueError('summary must be an object')
@@ -284,7 +290,7 @@ def _summary_with_cache(config_path, messages, runtime, *, edition):
 
 
 
-def _structured_request(config, schema, prompt, contents, diagnostics_dir, name, *, result_metadata=None):
+def _structured_request(config, schema, prompt, contents, diagnostics_dir, name, *, result_metadata=None, reasoning_effort=None):
     provider_list = model_providers(config)
     last_error = None
     for provider in provider_list:
@@ -293,6 +299,9 @@ def _structured_request(config, schema, prompt, contents, diagnostics_dir, name,
                    'response_format': {'type': 'json_schema', 'json_schema': {'name': name, 'strict': True, 'schema': schema}},
                    'messages': [{'role': 'system', 'content': prompt},
                                 {'role': 'user', 'content': json.dumps(contents, ensure_ascii=False)}]}
+        effort = provider.get('reasoning_effort') or reasoning_effort
+        if isinstance(effort, str) and effort:
+            payload['reasoning_effort'] = effort
         request = urllib.request.Request(provider['base_url'].rstrip('/') + '/chat/completions',
             data=json.dumps(payload, ensure_ascii=False).encode(),
             headers={'Authorization': 'Bearer ' + provider['api_key'], 'Content-Type': 'application/json'}, method='POST')
@@ -548,10 +557,12 @@ def _run(args: argparse.Namespace) -> int:
         summaries = {'brief': empty, 'review': empty}
     from report_avatars import collect_avatars
     avatar_ids = list(dict.fromkeys([conversation["conversation_id"], *[m["author_id"] for m in selected if m["author_id"]]]))
-    avatars = collect_avatars(root, conversation["conversation_id"], avatar_ids, manifest=manifest)
+    avatars = collect_avatars(root, conversation["conversation_id"], avatar_ids, manifest=manifest, cache_dir=runtime / "avatar-cache")
     image_messages = [message for message in selected if message["type"] == "image"]
     understood_images = [message for message in image_messages if isinstance(message.get("image_understanding"), dict)
-                         and not message["image_understanding"].get("refused") and not message["image_understanding"].get("missing")]
+                         and not message["image_understanding"].get("refused")
+                         and not message["image_understanding"].get("missing")
+                         and not message["image_understanding"].get("pending")]
     refused_images = sum(isinstance(message.get("image_understanding"), dict) and bool(message["image_understanding"].get("refused"))
                          for message in image_messages)
     missing_images = sum(isinstance(message.get("image_understanding"), dict) and bool(message["image_understanding"].get("missing"))
@@ -565,37 +576,48 @@ def _run(args: argparse.Namespace) -> int:
     tz = project_zone(project["timezone"])
     stamp = dt.datetime.fromtimestamp(start, tz).strftime("%Y%m%d-%H%M")
     base = project["report_prefix"] + "-" + (f"request-{args.request_id}" if getattr(args, 'request_id', None) else stamp)
-    editions = {}
-    report = {}
-    for edition in ('brief', 'review'):
+    renderer = getattr(args, "renderer", None) or render_plugin.load(None, report_module)
+
+    def _build_and_render(edition: str):
         summary = summaries[edition]
-        report = {"chat_username": conversation["conversation_id"], "chat_display": conversation["name"],
-                  "platform": manifest["source"]["platform"],
-                  "generated_at": dt.datetime.now().astimezone().isoformat(),
-                  "one_line": summary["one_line"], "stats": {},
-                  "topics": summary["topics"], "quotes": summary["quotes"]}
-        report["edition"] = edition
+        topics_copy = [
+            {**topic, "details": list(topic.get("details") or []), "message_ids": list(topic.get("message_ids") or []),
+             "participant_ids": list(topic.get("participant_ids") or []), "samples": list(topic.get("samples") or [])}
+            for topic in summary["topics"]
+        ]
+        quotes_copy = [dict(quote) for quote in summary["quotes"]]
+        item = {"chat_username": conversation["conversation_id"], "chat_display": conversation["name"],
+                "platform": manifest["source"]["platform"],
+                "generated_at": dt.datetime.now().astimezone().isoformat(),
+                "one_line": summary["one_line"], "stats": {},
+                "topics": topics_copy, "quotes": quotes_copy}
+        item["edition"] = edition
         if project.get("report_title"):
-            report["title_prefix"] = str(project["report_title"])
-        report["stats"]["messages"] = len(selected)
-        report["stats"]["excluded_own_reports"] = before_exclusion - len(selected)
-        enrich_report(report, selected, start, end, avatars)
-        report["stats"]["image_understood"] = len(understood_images)
-        report["window"] = {"start_unix": start, "end_unix_exclusive": end}
+            item["title_prefix"] = str(project["report_title"])
+        item["stats"]["messages"] = len(selected)
+        item["stats"]["excluded_own_reports"] = before_exclusion - len(selected)
+        enrich_report(item, selected, start, end, avatars)
+        item["stats"]["image_understood"] = len(understood_images)
+        item["window"] = {"start_unix": start, "end_unix_exclusive": end}
         if getattr(args, 'request_id', None):
-            report["request"] = {"kind": "on_demand", "id": args.request_id, "trigger_timestamp": end}
-        report["ai_summary_used"] = bool(selected)
-        report["media_understanding"] = {"images": {"total": len(image_messages), "understood": len(understood_images),
-                                                      "models": image_models, "thumbnail_limitations": thumbnail_images,
-                                                      "refused": refused_images, "missing": missing_images},
-                                         "voice": "not analyzed", "video": "not analyzed"}
+            item["request"] = {"kind": "on_demand", "id": args.request_id, "trigger_timestamp": end}
+        item["ai_summary_used"] = bool(selected)
+        item["media_understanding"] = {"images": {"total": len(image_messages), "understood": len(understood_images),
+                                                    "models": image_models, "thumbnail_limitations": thumbnail_images,
+                                                    "refused": refused_images, "missing": missing_images},
+                                       "voice": "not analyzed", "video": "not analyzed"}
         stem = f"{base}-{edition}"
         html_path, json_path, png_path = out / f"{stem}.html", out / f"{stem}.json", out / f"{stem}.png"
-        renderer = getattr(args, "renderer", None) or render_plugin.load(None, report_module)
-        html_path.write_text(renderer.html(report), encoding="utf-8")
-        json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        renderer.png(report, png_path)
-        editions[edition] = {"html": str(html_path), "json": str(json_path), "png": str(png_path)}
+        html_path.write_text(renderer.html(item), encoding="utf-8")
+        json_path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
+        renderer.png(item, png_path)
+        return {"html": str(html_path), "json": str(json_path), "png": str(png_path)}, item
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rendered = {edition: pool.submit(_build_and_render, edition) for edition in ('brief', 'review')}
+        results = {edition: future.result() for edition, future in rendered.items()}
+    editions = {edition: pair[0] for edition, pair in results.items()}
+    report = results['review'][1]
     trace_path = out / f"{base}-editions.sources.json"
     trace_path.write_text(json.dumps({"conversation_id": conversation["conversation_id"],
                                       "window": {"start_unix": start, "end_unix_exclusive": end},

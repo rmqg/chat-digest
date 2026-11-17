@@ -1,6 +1,17 @@
 # Changelog
 
-## 未发布
+## 2.1.0
+
+**性能优化与非阻塞交付**
+
+- 按需指令解析新增进程内确定性正则快路径（`summary_commands.fast_interpret`）：单行裸总结与“过去/最近 N 小时/分钟/天”直接秒级落盘窗口，不再为此起容器调用模型；复杂自然语言请求仍交由容器内模型兜底，并限制 `max_tokens: 256`（可选配置 `intent_reasoning_effort`）。
+- 头像收集改为 `96×96` 缩略图与磁盘指纹缓存（`runtime/digest/avatar-cache/`），显著减少头像编码时间与内存占用。
+- HTML 单文件内联头像改为 `<style>` 类映射全局去重（无 `<script>`、符合现有 CSP 且兼容报告站资源抽离），大型详细回顾 HTML 从数十 MB 降至数 MB 级别。
+- 长图 PNG 编码去掉耗时的 `optimize=True` 全策略穷举（改用 `compress_level=6`），`brief` 与 `review` 两个版本在生成容器内双线程并行渲染，容器 CPU 上限放宽至最多 2 核。
+- 总结请求载荷去除 `quote_candidates` 里与 `messages` 重复的全文、作者与时间戳，降低约三成输入冗余（缓存键同步升级至 `summary-semantic-v3-*`）；支持按 provider 或版本配置可选 `reasoning_effort`。
+- 交付与后台预富化解耦：`run-digest.py` 读取后台 `realtime-images-result.json` 与已发回执的非阻塞快照执行生成，并在容器退出后自动清理临时 `delivery-snapshot-*` 目录；`digest.py` 对尚在处理中的图片标记状态而不是阻断整份报告生成。
+
+**新手与头像更新（合并自未发布变更）**
 
 - 新增根目录中文安装向导：检查发行版、内核、Python、Docker/Compose、KVM、内存和磁盘；支持交互、`--config` 答案文件、`--non-interactive` 默认模板，私有配置权限为 600，末尾自动 doctor 并说明下一步。`scripts/install.sh` 的生产非交互参数保持兼容，根入口也能原样转发。
 - 新手教程 `docs/QUICKSTART.md` 区分无需账号和模型密钥的离线演示与真实部署，配合成数据示意图；补充宿主无 venv、历史群别名、WXGF/ffmpeg、时区和自发长图排障。

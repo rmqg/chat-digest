@@ -237,6 +237,17 @@ def _interpret(job: dict) -> dict | None:
     candidate = WORK / "jobs" / job["request_id"] / "candidate.json"
     output = candidate.with_name("intent.json")
     _atomic_json(candidate, job["candidate"])
+    import summary_commands
+    fast = summary_commands.fast_interpret(
+        str(job["candidate"].get("command_text", "")),
+        job["request_id"],
+        int(job["candidate"]["trigger_timestamp"]),
+    )
+    if fast is not None:
+        _atomic_json(output, fast)
+        job.update(intent=fast, status="accepted", updated_at=int(time.time()))
+        _atomic_json(JOBS / f"{job['request_id']}.json", job)
+        return fast
     result = _container_call(["/tool/summary_commands.py", "--interpret", "--input", str(Path("/work") / candidate.relative_to(DIGEST)),
                              "--output", str(Path("/work") / output.relative_to(DIGEST))], network="default", timeout=300)
     if result.returncode:

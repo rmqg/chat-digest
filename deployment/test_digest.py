@@ -133,8 +133,13 @@ class DigestConsumerRiskTests(unittest.TestCase):
         messages[0]['text'] = original
         raw = {'one_line': '简报', 'topics': [{'title': '测量的选择', 'summary': '测量应围绕重要目标。',
                'details': [], 'message_ids': [messages[0]['reference']]}], 'quotes': [0]}
-        with tempfile.TemporaryDirectory() as root, patch.object(digest, '_structured_request', return_value=raw):
+        seen = {}
+        def fake_request(config, schema, prompt, contents, diagnostics_dir, name, **kwargs):
+            seen['contents'] = contents
+            return raw
+        with tempfile.TemporaryDirectory() as root, patch.object(digest, '_structured_request', side_effect=fake_request):
             result = digest._summary_with_cache(self._config_file(root), messages, Path(root), edition='brief')
+        self.assertEqual(seen['contents']['quote_candidates'], [{'candidate_index': 0, 'reference': messages[0]['reference']}])
         self.assertEqual(result['quotes'][0]['message_id'], messages[0]['message_uid'])
         self.assertEqual(result['quotes'][0]['speaker'], messages[0]['author'])
         self.assertEqual(result['quotes'][0]['text'], original)

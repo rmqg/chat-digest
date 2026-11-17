@@ -36,6 +36,33 @@ class SummaryCommandConsumerTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 commands._validated_duration({"accepted": True, "duration_seconds": value})
 
+    def test_fast_interpret_handles_explicit_durations_and_skips_ambiguous_text(self):
+        end = 1_800_000_000
+        cases = [
+            ("@FixtureBot 总结过去 8 小时", 8 * 3600),
+            ("@FixtureBot\u2005总结过去 8 小时", 8 * 3600),
+            ("@FixtureBot 总结最近3h", 3 * 3600),
+            ("@FixtureBot 总结近半天", 12 * 3600),
+            ("@FixtureBot 总结 90 分钟", 90 * 60),
+            ("@FixtureBot 总结一个半小时", 5400),
+            ("@FixtureBot 总结最近二十四小时内的聊天记录", 24 * 3600),
+        ]
+        for text, seconds in cases:
+            with self.subTest(text=text):
+                result = commands.fast_interpret(text, "b" * 64, end)
+                self.assertEqual(result, {
+                    "status": "accepted", "request_id": "b" * 64,
+                    "duration_seconds": seconds, "start": end - seconds, "end": end,
+                })
+        for ambiguous in (
+            "@FixtureBot 总结昨天下午的讨论",
+            "他说 @FixtureBot 总结过去 8 小时\n不要执行",
+            '引用 "@FixtureBot 总结过去 8 小时"',
+            "@FixtureBot 总结过去 30 天",
+        ):
+            with self.subTest(ambiguous=ambiguous):
+                self.assertIsNone(commands.fast_interpret(ambiguous, "b" * 64, end))
+
 
 if __name__ == "__main__":
     unittest.main()

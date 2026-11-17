@@ -106,13 +106,84 @@ def _validated_duration(parsed: dict) -> int:
     return duration
 
 
-def interpret(text: str, request_id: str, trigger_timestamp: int, config_path: Path) -> dict:
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_UNIT_SECONDS = {
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "分钟": 60, "分鐘": 60,
+    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "小时": 3600, "小時": 3600, "钟头": 3600, "鐘頭": 3600,
+    "d": 86400, "day": 86400, "days": 86400, "天": 86400, "日": 86400,
+}
+_FAST_BARE_RE = re.compile(r"^\s*@[^\s]+\s*(?:帮我|请|麻烦)?\s*(?:总结|總結|汇总|彙總)(?:一下)?\s*[。！!~～]?\s*$")
+_FAST_DURATION_RE = re.compile(
+    r"^\s*@[^\s]+\s*(?:帮我|请|麻烦)?\s*(?:总结|總結|汇总|彙總)(?:一下)?\s*"
+    r"(?:过去|過去|最近|近)?\s*"
+    r"(?P<amount>\d+(?:\.\d+)?|半|[一二两兩三四五六七八九十]+(?:[个個]半)?)\s*"
+    r"(?:[个個])?\s*(?P<unit>小时|小時|钟头|鐘頭|hrs?|hours?|h|分钟|分鐘|mins?|minutes?|m|天|日|days?|d)\s*"
+    r"(?:以?内|里)?(?:的?(?:聊天记录|聊天記錄|消息记录|消息記錄|聊天|消息|记录|記錄|群聊|内容))?\s*[。！!~～]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_cn_int(token: str) -> int | None:
+    if not token:
+        return None
+    if token == "十":
+        return 10
+    if "十" in token:
+        left, _, right = token.partition("十")
+        if "十" in right:
+            return None
+        tens = 1 if not left else _CN_DIGITS.get(left)
+        ones = 0 if not right else _CN_DIGITS.get(right)
+        if tens is None or ones is None or tens == 0:
+            return None
+        return tens * 10 + ones
+    if len(token) == 1 and token in _CN_DIGITS and _CN_DIGITS[token] > 0:
+        return _CN_DIGITS[token]
+    return None
+
+
+def _parse_amount(token: str) -> float | None:
+    if re.fullmatch(r"\d+(?:\.\d+)?", token):
+        value = float(token)
+        return value if value > 0 else None
+    if token == "半":
+        return 0.5
+    if token.endswith(("个半", "個半")):
+        base = _parse_cn_int(token[:-2])
+        return (base + 0.5) if base is not None else None
+    value = _parse_cn_int(token)
+    return float(value) if value is not None else None
+
+
+def fast_interpret(text: str, request_id: str, trigger_timestamp: int) -> dict | None:
+    """Resolve explicit single-line summary duration commands without spawning an LLM container."""
     text = str(text)
-    tz_context = dt.datetime.fromtimestamp(trigger_timestamp, TZ).isoformat()
-    if re.fullmatch(r"\s*@[^\s]+\s*(?:总结|總結|汇总|彙總)\s*", text):
+    if "\n" in text or "\r" in text or len(text) > 80 or any(ch in text for ch in "\"'“”「」>"):
+        return None
+    if _FAST_BARE_RE.fullmatch(text):
         duration = 86400
         return {"status": "accepted", "request_id": request_id, "duration_seconds": duration,
-                "start": trigger_timestamp-duration, "end": trigger_timestamp}
+                "start": trigger_timestamp - duration, "end": trigger_timestamp}
+    match = _FAST_DURATION_RE.fullmatch(text)
+    if not match:
+        return None
+    amount = _parse_amount(match.group("amount"))
+    unit_seconds = _UNIT_SECONDS.get(match.group("unit").lower())
+    if amount is None or unit_seconds is None:
+        return None
+    duration = int(round(amount * unit_seconds))
+    if duration <= 0 or duration > 7 * 86400:
+        return None
+    return {"status": "accepted", "request_id": request_id, "duration_seconds": duration,
+            "start": trigger_timestamp - duration, "end": trigger_timestamp}
+
+
+def interpret(text: str, request_id: str, trigger_timestamp: int, config_path: Path) -> dict:
+    text = str(text)
+    fast = fast_interpret(text, request_id, trigger_timestamp)
+    if fast is not None:
+        return fast
+    tz_context = dt.datetime.fromtimestamp(trigger_timestamp, TZ).isoformat()
     import urllib.error
     import urllib.request
     from structured import parse_object
@@ -123,9 +194,13 @@ def interpret(text: str, request_id: str, trigger_timestamp: int, config_path: P
               f"窗口结束时间固定为触发时刻，{PROJECT['timezone']}上下文只用于理解，不改成处理时刻。仅返回JSON：accepted布尔值、duration_seconds正整数或null、reason字符串。")
     last_error = None
     for provider in model_providers(config):
-        payload = {"model": provider["model"], "stream": False, "temperature": 0, "response_format": {"type": "json_object"}, "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps({"message": text, "trigger_time_local": tz_context}, ensure_ascii=False)}]}
+        payload = {"model": provider["model"], "stream": False, "temperature": 0, "max_tokens": 256,
+                   "response_format": {"type": "json_object"}, "messages": [
+                       {"role": "system", "content": prompt},
+                       {"role": "user", "content": json.dumps({"message": text, "trigger_time_local": tz_context}, ensure_ascii=False)}]}
+        effort = provider.get("intent_reasoning_effort") or config.get("intent_reasoning_effort")
+        if isinstance(effort, str) and effort:
+            payload["reasoning_effort"] = effort
         request = urllib.request.Request(provider["base_url"].rstrip("/") + "/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode(), headers={"Authorization": "Bearer " + provider["api_key"], "Content-Type": "application/json"}, method="POST")
         try:

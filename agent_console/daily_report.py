@@ -272,13 +272,41 @@ def _initial(name):
     return next((char for char in str(name or '') if not char.isspace()), '？')
 
 
-def _avatar_html(author_id, author, avatars):
-    avatar = (avatars or {}).get(str(author_id or ''), {})
-    src = ''
+def _build_avatar_style(avatars):
+    if not isinstance(avatars, dict):
+        return '', {}
+    rules = []
+    classes = {}
+    uri_to_cls = {}
+    for identity, entry in avatars.items():
+        if not isinstance(entry, dict) or not entry.get('available'):
+            continue
+        if _safe_asset(entry.get('asset_src')):
+            continue
+        uri = _safe_asset(entry.get('data_uri'))
+        if not uri:
+            continue
+        cls = uri_to_cls.get(uri)
+        if cls is None:
+            cls = f'av-{len(uri_to_cls)}'
+            uri_to_cls[uri] = cls
+            rules.append(f'.digest-v2 .{cls}{{background-image:url({uri});background-size:cover;background-position:center;display:inline-block}}')
+        classes[str(identity)] = cls
+    return ''.join(rules), classes
+
+
+def _avatar_html(author_id, author, avatars, avatar_classes=None):
+    key = str(author_id or '')
+    avatar = (avatars or {}).get(key, {})
     if isinstance(avatar, dict) and avatar.get('available'):
-        src = _safe_asset(avatar.get('asset_src')) or _safe_asset(avatar.get('data_uri'))
-    if src:
-        return f"<img class='avatar source-avatar' src='{escape(src, quote=True)}' alt='' loading='lazy'>"
+        asset = _safe_asset(avatar.get('asset_src'))
+        if asset:
+            return f"<img class='avatar source-avatar' src='{escape(asset, quote=True)}' alt='' loading='lazy'>"
+        if avatar_classes and key in avatar_classes:
+            return f"<span class='avatar source-avatar {avatar_classes[key]}' aria-hidden='true'></span>"
+        src = _safe_asset(avatar.get('data_uri'))
+        if src:
+            return f"<img class='avatar source-avatar' src='{escape(src, quote=True)}' alt='' loading='lazy'>"
     return f"<span class='avatar avatar-fallback' aria-label='{escape(str(author), quote=True)}'>{escape(_initial(author))}</span>"
 
 
@@ -319,7 +347,7 @@ def _source_images_html(images):
     return "<div class='source-gallery'>" + ''.join(entries) + '</div>' if entries else ''
 
 
-def source_messages_html(messages, avatars=None, timezone=None):
+def source_messages_html(messages, avatars=None, timezone=None, avatar_classes=None):
     rendered = []
     for message in messages or []:
         author = str(message.get('author') or message.get('speaker') or '未知成员')
@@ -339,7 +367,7 @@ def source_messages_html(messages, avatars=None, timezone=None):
         time_html = f"<div class='source-meta'>{escape(time)}</div>" if time else ''
         main = f"<p class='source-text'>{main_html}</p>" if main_html else ''
         body = main + quote_html + ('' if quoted else image_html) + unavailable_html
-        rendered.append("<li class='source'>" + _avatar_html(author_id, author, avatars) + "<div class='source-body'><b>" + escape(author) + '</b>' + time_html + body + '</div></li>')
+        rendered.append("<li class='source'>" + _avatar_html(author_id, author, avatars, avatar_classes=avatar_classes) + "<div class='source-body'><b>" + escape(author) + '</b>' + time_html + body + '</div></li>')
     return ''.join(rendered)
 
 
@@ -368,13 +396,13 @@ def rank_value(row):
     return int(row.get('tokens', row.get('count', row.get('messages', 0))) or 0), ('token' if 'tokens' in row else '条')
 
 
-def rank_rows_html(report):
+def rank_rows_html(report, avatar_classes=None):
     avatars = report.get('avatars') or {}
     result = []
     for row in ranked_participants(report):
         name = _row_name(row)
         value, unit = rank_value(row)
-        result.append(f"<li>{_avatar_html(_row_identity(row), name, avatars)}<span class='rank-name'>{escape(name)}</span><strong>{escape(str(value))} {escape(unit)}</strong></li>")
+        result.append(f"<li>{_avatar_html(_row_identity(row), name, avatars, avatar_classes=avatar_classes)}<span class='rank-name'>{escape(name)}</span><strong>{escape(str(value))} {escape(unit)}</strong></li>")
     return ''.join(result)
 
 
@@ -435,7 +463,7 @@ def _topic_people(topic, names):
     return list(people.items())
 
 
-def _topic_html(index, topic, report, names, timezone):
+def _topic_html(index, topic, report, names, timezone, avatar_classes=None):
     avatars = report.get('avatars') or {}
     parts = [f'<article class="topic" id="topic-{index}"><h3><span>{index:02}</span>'
              + escape(str(topic.get('topic') or '未命名话题')) + '</h3>']
@@ -450,19 +478,19 @@ def _topic_html(index, topic, report, names, timezone):
         parts.append('<ul class="topic-details details">' + ''.join(f'<li>{escape(str(item))}</li>' for item in details) + '</ul>')
     people = _topic_people(topic, names) if report.get('edition') != 'brief' else []
     if people:
-        shown = ''.join(_avatar_html(identity, name, avatars) for identity, name in people[:TOPIC_AVATAR_LIMIT])
+        shown = ''.join(_avatar_html(identity, name, avatars, avatar_classes=avatar_classes) for identity, name in people[:TOPIC_AVATAR_LIMIT])
         extra = f'<span>+{len(people) - TOPIC_AVATAR_LIMIT}</span>' if len(people) > TOPIC_AVATAR_LIMIT else ''
         parts.append(f'<div class="people">{shown}{extra}</div>')
     refs = _topic_refs(topic)
     if refs:
         label = f'来源 · {len(refs)} 条消息' + (f' · {time_range}' if time_range else '')
         parts.append(f'<details><summary>{escape(label)}</summary><ul class="sources">'
-                     + source_messages_html(refs, avatars, timezone) + '</ul></details>')
+                     + source_messages_html(refs, avatars, timezone, avatar_classes=avatar_classes) + '</ul></details>')
     parts.append('</article>')
     return ''.join(parts)
 
 
-def _quote_html(quote, report, timezone):
+def _quote_html(quote, report, timezone, avatar_classes=None):
     avatars = report.get('avatars') or {}
     source = _quote_source(quote)
     speaker = str(quote.get('speaker') or source.get('author') or '群友')
@@ -471,7 +499,7 @@ def _quote_html(quote, report, timezone):
         when = time_text(source.get('timestamp'), '%m.%d %H:%M', timezone)
     footer = escape(speaker) + (f' · {escape(str(when))}' if when else '')
     if source.get('text') or source.get('image_src') or source.get('image_sources'):
-        footer += '<details><summary>查看来源</summary><ul class="sources">' + source_messages_html([source], avatars, timezone) + '</ul></details>'
+        footer += '<details><summary>查看来源</summary><ul class="sources">' + source_messages_html([source], avatars, timezone, avatar_classes=avatar_classes) + '</ul></details>'
     return '<blockquote><p>' + escape(str(quote['text'])) + '</p><footer>' + footer + '</footer></blockquote>'
 
 
@@ -480,10 +508,11 @@ def render_html(report):
     prefix, edition, chat = report_title(report), _edition_label(report), _chat_name(report)
     topics = [topic for topic in report.get('topics') or [] if isinstance(topic, dict)]
     names = _people_names(report)
+    avatar_css, avatar_classes = _build_avatar_style(report.get('avatars'))
     parts = ["<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
              f'<meta http-equiv="Content-Security-Policy" content="{CONTENT_SECURITY_POLICY}"><title>',
              escape(f'{prefix} · {edition} · {chat}'), '</title><style>', rounded_webfont_css(),
-             PAGE_CSS, RHYTHM_CHART_CSS, SOURCE_MESSAGES_CSS,
+             PAGE_CSS, RHYTHM_CHART_CSS, SOURCE_MESSAGES_CSS, avatar_css,
              '</style></head><body class="digest-v2"><main class="page"><header class="hero"><div class="chat">',
              f"<span class='avatar avatar-fallback' aria-hidden='true'>{escape(_initial(chat))}</span><span>{escape(chat)}</span></div>",
              f'<h1>{escape(prefix)} <span class="edition">· {edition}</span></h1>',
@@ -503,14 +532,14 @@ def render_html(report):
     parts.append(f'<section><h2>消息节奏</h2><div class="chart">{rhythm_chart_contents(report)}</div></section>')
     if topics:
         parts.append('<section><h2>话题讨论</h2>' + ''.join(
-            _topic_html(index, topic, report, names, timezone) for index, topic in enumerate(topics, 1)) + '</section>')
+            _topic_html(index, topic, report, names, timezone, avatar_classes=avatar_classes) for index, topic in enumerate(topics, 1)) + '</section>')
     quotes = _quotes(report)
     if quotes:
-        parts.append('<section><h2>群友金句</h2>' + ''.join(_quote_html(quote, report, timezone) for quote in quotes) + '</section>')
+        parts.append('<section><h2>群友金句</h2>' + ''.join(_quote_html(quote, report, timezone, avatar_classes=avatar_classes) for quote in quotes) + '</section>')
     ranked = ranked_participants(report)
     if ranked:
         half = (len(ranked) + 1) // 2
-        parts.append(f'<section><h2>活跃前20名</h2><ol class="rank" style="--rows:{half}">' + rank_rows_html(report) + '</ol></section>')
+        parts.append(f'<section><h2>活跃前20名</h2><ol class="rank" style="--rows:{half}">' + rank_rows_html(report, avatar_classes=avatar_classes) + '</ol></section>')
     generated = _generated_text(report, timezone)
     if generated:
         parts.append(f'<footer class="generated">生成于 {escape(generated)}</footer>')
@@ -921,7 +950,7 @@ class _PngPage:
             op(canvas, draw)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        canvas.save(path, format='PNG', optimize=True)
+        canvas.save(path, format='PNG', compress_level=6)
 
 
 def render_png_pillow(report, output_path):

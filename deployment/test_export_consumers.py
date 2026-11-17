@@ -162,6 +162,26 @@ class AvatarTests(ExportFixture):
         result = report_avatars.collect_avatars(self.root, fx.CONVERSATION, [fx.CONVERSATION])
         self.assertTrue(result[fx.CONVERSATION]["available"])
 
+    def test_avatar_cache_and_96px_resize(self):
+        import base64
+        import io
+        from PIL import Image
+
+        self.root.mkdir(parents=True)
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), (40, 120, 210)).save(buf, format="PNG")
+        avatar = fx.add_media(self.root, buf.getvalue())
+        fx.build_export(self.root, [], members=[{"id": "u1", "name": "甲", "avatar": avatar["path"]}])
+        cache_dir = self.base / "avatar-cache"
+        first = report_avatars.collect_avatars(self.root, fx.CONVERSATION, ["u1"], cache_dir=cache_dir)
+        self.assertTrue(first["u1"]["available"])
+        raw = base64.b64decode(first["u1"]["data_uri"].split(",", 1)[1])
+        with Image.open(io.BytesIO(raw)) as resized:
+            self.assertEqual(resized.size, (96, 96))
+        with patch.object(report_avatars, "_image_bytes", side_effect=AssertionError("cache miss")):
+            second = report_avatars.collect_avatars(self.root, fx.CONVERSATION, ["u1"], cache_dir=cache_dir)
+        self.assertEqual(first, second)
+
 
 class AvatarRefreshTests(ExportFixture):
     def _project(self, command):
@@ -239,17 +259,23 @@ class DigestExportTests(ExportFixture):
         self.assertTrue(digest._is_own_report({"is_self": True, "type": "image", "message_id": "m9"}, set(), set(), {"m9"}))
         self.assertFalse(digest._is_own_report({"is_self": True, "type": "text", "text": "普通发言"}, set(), {image_hash}, set()))
 
-    def test_refused_and_missing_images_are_marked_other_gaps_stop(self):
-        messages = [{"message_uid": "r", "type": "image"}, {"message_uid": "m", "type": "image"}]
-        understanding = {"r": {"status": "failed", "source_quality": "original",
-                               "attempts": [{"category": "refusal", "retryable": False}]},
-                         "m": {"status": "unavailable", "source_quality": "missing"}}
+    def test_refused_and_missing_images_are_marked_and_pending_does_not_block(self):
+        messages = [
+            {"message_uid": "r", "type": "image"},
+            {"message_uid": "m", "type": "image"},
+            {"message_uid": "p", "type": "image"},
+        ]
+        understanding = {
+            "r": {"status": "failed", "source_quality": "original",
+                  "attempts": [{"category": "refusal", "retryable": False}]},
+            "m": {"status": "unavailable", "source_quality": "missing"},
+            "p": {"status": "pending", "source_quality": "pending"},
+        }
         digest._attach_image_understanding(messages, understanding)
         self.assertTrue(messages[0]["image_understanding"]["refused"])
         self.assertTrue(messages[1]["image_understanding"]["missing"])
-        with self.assertRaises(ValueError):
-            digest._attach_image_understanding([{"message_uid": "p", "type": "image"}],
-                                               {"p": {"status": "pending", "source_quality": "pending"}})
+        self.assertTrue(messages[2]["image_understanding"]["pending"])
+        self.assertEqual(messages[2]["image_understanding"]["description"], "（图片处理中）")
 
 
 
