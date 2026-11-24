@@ -127,6 +127,16 @@ class DigestConsumerRiskTests(unittest.TestCase):
         path.write_text(json.dumps({"base_url": "https://model.invalid/v1", "model": "test", "api_key": "test"}))
         return path
 
+    @staticmethod
+    def _clean_guardrail(*_args, **_kwargs):
+        return {
+            "drop_topic_indices": [],
+            "strip_message_ids": [],
+            "drop_quote_indices": [],
+            "one_line_unsafe": False,
+            "replacement_one_line": "",
+        }
+
     def test_brief_quote_selection_backfills_exact_original_text(self):
         messages = self._summary_messages(1)
         original = '  Measure what matters, not what is merely easy to count.  '
@@ -137,7 +147,9 @@ class DigestConsumerRiskTests(unittest.TestCase):
         def fake_request(config, schema, prompt, contents, diagnostics_dir, name, **kwargs):
             seen['contents'] = contents
             return raw
-        with tempfile.TemporaryDirectory() as root, patch.object(digest, '_structured_request', side_effect=fake_request):
+        with tempfile.TemporaryDirectory() as root, patch.object(
+                digest, '_structured_request', side_effect=fake_request), patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail):
             result = digest._summary_with_cache(self._config_file(root), messages, Path(root), edition='brief')
         self.assertEqual(seen['contents']['quote_candidates'], [{'candidate_index': 0, 'reference': messages[0]['reference']}])
         self.assertEqual(result['quotes'][0]['message_id'], messages[0]['message_uid'])
@@ -152,11 +164,13 @@ class DigestConsumerRiskTests(unittest.TestCase):
             {'title': '短小工具分享', 'summary': '一句话也有独立价值',
              'details': ['工具用途与已知限制'], 'message_ids': ['M0004']}], 'quotes': [2]}
         with tempfile.TemporaryDirectory() as root, patch.object(
-                digest, '_structured_request', return_value=raw) as request:
+                digest, '_structured_request', return_value=raw) as request, patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail) as guardrail_req:
             config = self._config_file(root)
             first = digest._summary_with_cache(config, messages, Path(root), edition='review')
             second = digest._summary_with_cache(config, messages, Path(root), edition='review')
         self.assertEqual(request.call_count, 1)
+        self.assertEqual(guardrail_req.call_count, 1)
         self.assertEqual(first, second)
         self.assertEqual([t['topic'] for t in first['topics']], ['技术讨论', '短小工具分享'])
         self.assertEqual(first['topics'][0]['details'], raw['topics'][0]['details'])
@@ -172,7 +186,8 @@ class DigestConsumerRiskTests(unittest.TestCase):
             {'title': '具体讨论', 'summary': '有来源的内容', 'details': ['事实'],
              'message_ids': ['M0000']}], 'quotes': []}
         with tempfile.TemporaryDirectory() as root, patch.object(
-                digest, '_structured_request', side_effect=[invalid, valid]) as request:
+                digest, '_structured_request', side_effect=[invalid, valid]) as request, patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail):
             config = self._config_file(root)
             with self.assertRaises(ValueError):
                 digest._summary_with_cache(config, messages, Path(root), edition='review')
@@ -188,7 +203,8 @@ class DigestConsumerRiskTests(unittest.TestCase):
             return {'one_line': '摘要', 'topics': [{'title': title, 'summary': '讨论',
                     'details': ['具体信息'], 'message_ids': ['M0000']}], 'quotes': []}
         with tempfile.TemporaryDirectory() as root, patch.object(
-                digest, '_structured_request', side_effect=[response('第一版解释'), response('新版解释')]) as request:
+                digest, '_structured_request', side_effect=[response('第一版解释'), response('新版解释')]) as request, patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail):
             config = self._config_file(root)
             first = digest._summary_with_cache(config, messages, Path(root), edition='review')
             changed = json.loads(config.read_text())
@@ -205,7 +221,8 @@ class DigestConsumerRiskTests(unittest.TestCase):
             return {'one_line': title, 'topics': [{'title': title, 'summary': title,
                     'details': [], 'message_ids': ['M0000']}], 'quotes': []}
         with tempfile.TemporaryDirectory() as root, patch.object(
-                digest, '_structured_request', side_effect=[response('简报'), response('完整回顾')]) as request:
+                digest, '_structured_request', side_effect=[response('简报'), response('完整回顾')]) as request, patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail):
             config = self._config_file(root)
             brief = digest._summary_with_cache(config, messages, Path(root), edition='brief')
             review = digest._summary_with_cache(config, messages, Path(root), edition='review')
@@ -220,13 +237,63 @@ class DigestConsumerRiskTests(unittest.TestCase):
         raw = {'one_line': '回顾', 'topics': [{'title': '具体回顾', 'summary': '详情',
                'details': ['完整内容'], 'message_ids': ['M0000']}], 'quotes': []}
         with tempfile.TemporaryDirectory() as root, patch.object(
-                digest, '_structured_request', return_value=raw) as request:
+                digest, '_structured_request', return_value=raw) as request, patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail):
             config = self._config_file(root)
             digest._summary_with_cache(config, messages, Path(root), edition='review')
             with patch.object(digest, '_SUMMARY_BRIEF_PROMPT', digest._SUMMARY_BRIEF_PROMPT + '新增简报规则。'):
                 cached = digest._summary_with_cache(config, messages, Path(root), edition='review')
         self.assertEqual(request.call_count, 1)
         self.assertEqual(cached['topics'][0]['topic'], '具体回顾')
+
+    def test_guardrail_sanitizes_summary_and_caches_filtered_result(self):
+        messages = self._summary_messages(3)
+        messages[0]['text'] = '大家讨论了实验室服务器风扇清灰流程。'
+        messages[1]['text'] = '虚构敏感时政讨论条目，不应保留在公开总结里。'
+        messages[2]['text'] = '这是一条符合金句长度要求的安全总结发言。'
+        raw = {
+            'one_line': '今天主要聊了风扇清灰和虚构敏感时政讨论。',
+            'topics': [
+                {'title': '服务器风扇清灰', 'summary': '整理了机柜风扇清理步骤。', 'details': ['先断电再除尘'], 'message_ids': ['M0000']},
+                {'title': '虚构敏感时政话题', 'summary': '讨论了虚构官员人事动向。', 'details': ['应当被静默剔除'], 'message_ids': ['M0001']},
+            ],
+            'quotes': [1, 2],
+        }
+        verdict = {
+            'drop_topic_indices': [1],
+            'strip_message_ids': [],
+            'drop_quote_indices': [1],
+            'one_line_unsafe': True,
+            'replacement_one_line': '今日群内交流了实验室服务器风扇清灰流程。',
+        }
+        with tempfile.TemporaryDirectory() as root, patch.object(
+                digest, '_structured_request', return_value=raw) as gen_req, patch.object(
+                digest, '_guardrail_request', return_value=verdict) as guard_req:
+            config = self._config_file(root)
+            first = digest._summary_with_cache(config, messages, Path(root), edition='brief')
+            second = digest._summary_with_cache(config, messages, Path(root), edition='brief')
+        self.assertEqual(gen_req.call_count, 1)
+        self.assertEqual(guard_req.call_count, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(first['one_line'], '今日群内交流了实验室服务器风扇清灰流程。')
+        self.assertEqual([t['topic'] for t in first['topics']], ['服务器风扇清灰'])
+        self.assertEqual([q['message_id'] for q in first['quotes']], ['uid-2'])
+
+    def test_guardrail_config_change_invalidates_cache_and_can_disable_review(self):
+        messages = self._summary_messages(1)
+        raw = {'one_line': '摘要', 'topics': [{'title': '日常更新', 'summary': '具体说明',
+               'details': [], 'message_ids': ['M0000']}], 'quotes': []}
+        with tempfile.TemporaryDirectory() as root, patch.object(
+                digest, '_structured_request', return_value=raw) as gen_req, patch.object(
+                digest, '_guardrail_request', side_effect=self._clean_guardrail) as guard_req:
+            config = self._config_file(root)
+            digest._summary_with_cache(config, messages, Path(root), edition='brief')
+            changed = json.loads(config.read_text())
+            changed['guardrail'] = {'enabled': False}
+            config.write_text(json.dumps(changed))
+            digest._summary_with_cache(config, messages, Path(root), edition='brief')
+        self.assertEqual(gen_req.call_count, 2)
+        self.assertEqual(guard_req.call_count, 1)
 
     def test_detailed_topics_and_quotes_are_not_silently_truncated(self):
         messages = [{"message_uid": f"uid-{i}", "reference": f"M{i:04d}", "timestamp": 100 + i,

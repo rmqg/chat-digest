@@ -135,7 +135,17 @@ class _StandInModel(http.server.BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(length))
         name = request["response_format"]["json_schema"]["name"]
         contents = json.loads(request["messages"][1]["content"])
-        content = json.dumps(_summary(contents, "brief" if name.endswith("brief") else "review"), ensure_ascii=False)
+        if name == "chat_group_safety_review":
+            result_obj = {
+                "drop_topic_indices": [],
+                "strip_message_ids": [],
+                "drop_quote_indices": [],
+                "one_line_unsafe": False,
+                "replacement_one_line": "",
+            }
+        else:
+            result_obj = _summary(contents, "brief" if name.endswith("brief") else "review")
+        content = json.dumps(result_obj, ensure_ascii=False)
         chunks = [{"choices": [{"index": 0, "delta": {"role": "assistant", "content": content}}], "model": "demo-stand-in"},
                   {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "model": "demo-stand-in"}]
         body = "".join("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"

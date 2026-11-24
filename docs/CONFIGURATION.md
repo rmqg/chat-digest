@@ -78,6 +78,7 @@ v1.x 的 `group.id`、`bot.username`、`desktop_container`、`images.desktop`、
 | `model` | 字符串 | 无，必填 | 模型名 | `"gemini-3-flash"` |
 | `api_key` | 字符串 | 无，必填 | 以 `Authorization: Bearer` 发送 | — |
 | `fallbacks` | 对象数组 | `[]` | 全局备用链。每项同样有 `base_url`、`model`、`api_key`，按顺序尝试；缺的字段继承主配置 | `[{"base_url": "...", "model": "backup-model", "api_key": "..."}]` |
+| `guardrail` | 对象 | 默认启用 | 可选的摘要合规过滤配置：`enabled`（默认 `true`）、`semantic_review`（默认 `true`，复用同一模型链复核漏网敏感话题并静默剔除）、`blocklist_file`（可选私有词表路径，相对路径按 `runtime/digest` 解析；也可直接在 `runtime/digest/guardrail-blocklist.txt` 放每行一个词条，或设 `CHAT_DIGEST_GUARDRAIL_BLOCKLIST`） | `{"enabled": true, "semantic_review": true}` |
 
 **所有模型调用都照这条链走**：日报摘要、网页摘要、OCR 摘要、群内 @ 请求的时长解析、QQ 的自然语言请求。程序不去判断某个模型“现在好不好”，只按下面的规则切换：
 
