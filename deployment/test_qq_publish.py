@@ -82,6 +82,37 @@ class QQPublishTests(unittest.TestCase):
                 self.assertEqual(qq_publish.publish(config)["status"], "unchanged")
                 self.assertEqual(run.call_count, 1)
 
+    def test_streaming_html_injection_across_chunk_boundary_and_low_memory_deferral(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reports, state, stage = root / "reports", root / "state", root / "stage"
+            stage.mkdir()
+            self.report_bundle(reports)
+            # Pad right before </head> and <BODY ...> so both cross the 256 KiB chunk boundary.
+            head_pad = "<!-- " + ("a" * (256 * 1024 - 16)) + " -->"
+            body_pad = "<!-- " + ("b" * (256 * 1024 - 12)) + " -->"
+            big_html = f"<html><head>{head_pad}</head>{body_pad}<BODY class='digest-v2'><p>ok</p></body></html>"
+            (reports / f"qq-{GROUP_ID}-sample-brief.html").write_text(big_html, encoding="utf-8")
+
+            files = qq_publish.build_bundle(reports, GROUP_ID, stage)
+            self.assertIn(f"qq-{GROUP_ID}-sample-brief.html", files)
+            built = (stage / f"qq-{GROUP_ID}-sample-brief.html").read_text(encoding="utf-8")
+            self.assertIn(qq_publish.reader_styles() + "</head>", built)
+            self.assertIn("<BODY class='digest-v2'><p class=\"site-home\">", built)
+
+            config = root / "publish.json"
+            config.write_text(json.dumps({
+                "group_id": GROUP_ID, "reports_dir": str(reports), "state_dir": str(state),
+                "host": "qq-reports.example.invalid", "user": "qq_demo_account", "port": 2222,
+                "identity_file": str(root / "id_ed25519"), "known_hosts": str(root / "known_hosts")}),
+                encoding="utf-8")
+            with patch.object(qq_publish, "_mem_available_kb", return_value=150000), \
+                 patch.object(qq_publish, "build_bundle", side_effect=AssertionError("should defer")), \
+                 patch.object(qq_publish.subprocess, "run", side_effect=AssertionError("should not rsync")):
+                res = qq_publish.publish(config, min_avail_kb=512000)
+            self.assertEqual(res["status"], "deferred")
+            self.assertEqual(res["available_kb"], 150000)
+
 
 if __name__ == "__main__":
     unittest.main()

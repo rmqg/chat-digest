@@ -142,8 +142,8 @@ def _input_stamp(root: Path, config: dict, source_media_files: list[str] | None 
     paths = [p for p in (root / 'runtime/reports').iterdir()
              if p.suffix in ('.json', '.html', '.png')]
     paths.extend([Path(__file__), Path(__file__).with_name('report_site.py'),
-                  Path(__file__).with_name('source_media.py'), REPORT_RENDERER_PATH,
-                  REPORT_RENDERER_PATH.with_name('report_metrics.py')])
+                  Path(__file__).with_name('source_media.py'), Path(__file__).with_name('report_web_style.py'),
+                  REPORT_RENDERER_PATH, REPORT_RENDERER_PATH.with_name('report_metrics.py')])
     paths.extend((root / 'runtime/digest/sent-receipts').glob('*.json'))
     paths.extend((root / 'runtime/digest/on-demand-receipts').glob('*.json'))
     paths.extend(Path(path) for path in (source_media_files or []))
@@ -203,7 +203,35 @@ def _write_success(path: Path, files: list[str], digest: str, input_stamp: str =
             pass
 
 
-def publish_reports(config_path: Path = CONFIG_PATH, *, root: Path = ROOT) -> dict[str, Any]:
+def _mem_available_kb() -> int | None:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as stream:
+            for line in stream:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _configured_min_avail_kb(default: int = 512000) -> int:
+    raw = os.environ.get("CHAT_DIGEST_PUBLISH_MIN_AVAIL_KB")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def publish_reports(
+    config_path: Path = CONFIG_PATH,
+    *,
+    root: Path = ROOT,
+    min_avail_kb: int | None = None,
+) -> dict[str, Any]:
     """Build and publish a safe static-file manifest; absent config disables publishing."""
     config_path = Path(config_path)
     config = _load_config(config_path)
@@ -225,6 +253,15 @@ def publish_reports(config_path: Path = CONFIG_PATH, *, root: Path = ROOT) -> di
         input_stamp = _input_stamp(root, config, prior_media_files)
         if prior and prior.get('input_stamp') == input_stamp:
             return {'status': 'unchanged', 'reports': sum(p.startswith('reports/') for p in prior['files']), 'files': prior['files']}
+        if min_avail_kb is not None and min_avail_kb > 0:
+            avail_kb = _mem_available_kb()
+            if avail_kb is not None and avail_kb < min_avail_kb:
+                return {
+                    "status": "deferred",
+                    "reason": "low_memory",
+                    "available_kb": avail_kb,
+                    "min_available_kb": min_avail_kb,
+                }
         output_dir = root / "runtime" / "report-site"
         if output_dir.is_symlink():
             raise PublishError("report site output directory must not be a symlink")
@@ -261,7 +298,7 @@ def publish_reports(config_path: Path = CONFIG_PATH, *, root: Path = ROOT) -> di
 
 def main() -> int:
     try:
-        result = publish_reports()
+        result = publish_reports(min_avail_kb=_configured_min_avail_kb())
     except Exception as exc:
         print(f"report publish: {exc}", file=sys.stderr)
         return 1

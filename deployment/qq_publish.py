@@ -19,6 +19,86 @@ _PUBLISHER_CODE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 _SAFE_STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,160}\Z")
 _SAFE_ASSET = re.compile(r"[a-f0-9]{64}\.(?:png|jpe?g|gif|webp|woff2?|ttf|otf)\Z")
+_BODY_OPEN_RE = re.compile(rb"<body\b[^>]*>", re.IGNORECASE)
+_PARTIAL_BODY_RE = re.compile(rb"<(?:b(?:o(?:d(?:y(?:\b[^>]*)?)?)?)?)?\Z", re.IGNORECASE)
+_HTML_STREAM_CHUNK = 256 * 1024
+_HASH_CHUNK = 1024 * 1024
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(_HASH_CHUNK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _mem_available_kb() -> int | None:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as stream:
+            for line in stream:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _configured_min_avail_kb(default: int = 512000) -> int:
+    raw = os.environ.get("CHAT_DIGEST_PUBLISH_MIN_AVAIL_KB")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def _copy_html_with_reader_chrome(source: Path, destination: Path, styles: str, navigation: str) -> None:
+    """Stream HTML while injecting navigation after <body> and styles before </head>."""
+    styles_bytes = styles.encode("utf-8")
+    nav_bytes = navigation.encode("utf-8")
+    injected_head = False
+    injected_body = False
+    buf = b""
+    with source.open("rb") as inp, destination.open("wb") as out:
+        while True:
+            chunk = inp.read(_HTML_STREAM_CHUNK)
+            eof = not chunk
+            if chunk:
+                buf += chunk
+            if not injected_head:
+                head_idx = buf.find(b"</head>")
+                if head_idx != -1:
+                    buf = buf[:head_idx] + styles_bytes + buf[head_idx:]
+                    injected_head = True
+            if not injected_body:
+                body_match = _BODY_OPEN_RE.search(buf)
+                if body_match is not None:
+                    buf = buf[:body_match.end()] + nav_bytes + buf[body_match.end():]
+                    injected_body = True
+            if eof or (injected_head and injected_body):
+                if buf:
+                    out.write(buf)
+                    buf = b""
+                if eof:
+                    break
+                for tail_chunk in iter(lambda: inp.read(_HTML_STREAM_CHUNK), b""):
+                    out.write(tail_chunk)
+                break
+            keep = 7 if not injected_head else 0
+            if not injected_body:
+                partial_match = _PARTIAL_BODY_RE.search(buf)
+                if partial_match is not None:
+                    keep = max(keep, min(len(buf) - partial_match.start(), 65536))
+            if keep == 0:
+                out.write(buf)
+                buf = b""
+            elif len(buf) > keep:
+                out.write(buf[:-keep])
+                buf = buf[-keep:]
 
 
 def _source_stamp(source: Path) -> str:
@@ -77,11 +157,9 @@ def build_bundle(source: Path, group_id: int, destination: Path) -> list[str]:
             for extension in ("html", "png"):
                 name = stem + "." + extension
                 if extension == 'html':
-                    document = paths[extension].read_text(encoding='utf-8')
                     sibling = stem[:-6] + '-review.html' if stem.endswith('-brief') else stem[:-7] + '-brief.html'
                     navigation = '<p class="site-home"><a href="./">返回本群首页</a> · <a href="' + sibling + '">切换简报/回顾</a></p>'
-                    document = re.sub(r'(<body\b[^>]*>)', lambda match: match.group(1) + navigation, document, count=1, flags=re.IGNORECASE)
-                    (destination / name).write_text(document.replace('</head>', reader_styles() + '</head>', 1), encoding='utf-8')
+                    _copy_html_with_reader_chrome(paths[extension], destination / name, reader_styles(), navigation)
                 else:
                     shutil.copyfile(paths[extension], destination / name)
                 files.append(name)
@@ -121,7 +199,7 @@ def _load_config(config_path: Path) -> dict:
     return config
 
 
-def publish(config_path: Path) -> dict:
+def publish(config_path: Path, *, min_avail_kb: int | None = None) -> dict:
     config = _load_config(config_path)
     group_id = config["group_id"]
     state_dir = Path(config["state_dir"])
@@ -141,13 +219,22 @@ def publish(config_path: Path) -> dict:
             previous = json.loads(success.read_text(encoding="utf-8"))
             if previous.get("input_stamp") == source_stamp and previous.get("group_id") == group_id:
                 return {"status": "unchanged", "files": len(previous.get("files", []))}
+        if min_avail_kb is not None and min_avail_kb > 0:
+            avail_kb = _mem_available_kb()
+            if avail_kb is not None and avail_kb < min_avail_kb:
+                return {
+                    "status": "deferred",
+                    "reason": "low_memory",
+                    "available_kb": avail_kb,
+                    "min_available_kb": min_avail_kb,
+                }
         with tempfile.TemporaryDirectory(prefix=".qq-publish-", dir=state_dir) as temporary:
             stage = Path(temporary)
             files = build_bundle(reports_dir, group_id, stage)
             if not files:
                 return {"status": "no_complete_reports", "files": 0}
             fingerprint = hashlib.sha256(json.dumps([
-                (name, hashlib.sha256((stage / name).read_bytes()).hexdigest()) for name in files
+                (name, _file_sha256(stage / name)) for name in files
             ]).encode()).hexdigest()
             ssh = ["ssh", "-i", config["identity_file"], "-p", str(config["port"]),
                    "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
@@ -172,7 +259,7 @@ def main(argv=None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(publish(args.config), ensure_ascii=False))
+        print(json.dumps(publish(args.config, min_avail_kb=_configured_min_avail_kb()), ensure_ascii=False))
         return 0
     except Exception as exc:
         print(json.dumps({"status": "failed", "error_type": type(exc).__name__}))

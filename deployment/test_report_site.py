@@ -487,5 +487,78 @@ class BuildSiteTests(unittest.TestCase):
         rendered = report_site._refresh_header_metrics(source, {'topics': [{'summary': '误计字符'}], 'leaders': {}})
         self.assertIn(f'正文共 {expected} 字（仅计中文）', rendered)
 
+    def test_incremental_cache_reuses_unchanged_reports_and_invalidates_on_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / 'runtime/reports', root / 'site'
+            source.mkdir(parents=True)
+            add_report(source, 'first', end=1, summary='第一天')
+            add_report(source, 'second', end=2, summary='第二天')
+            first_result = report_site.build_site(source, output)
+            self.assertEqual(first_result['reports'], 2)
+            self.assertNotIn('.build-cache.json', first_result['files'])
+            self.assertTrue((output / '.build-cache.json').is_file())
+
+            with patch.object(report_site, '_stream_extract_html', side_effect=AssertionError('cached report re-parsed')):
+                second_result = report_site.build_site(source, output)
+            self.assertEqual(second_result, first_result)
+
+            # Adding a new report only builds the new report; existing reports stay cached.
+            seen_paths = []
+            orig_extract = report_site._stream_extract_html
+
+            def spy_extract(html_path, assets_out, written_assets):
+                seen_paths.append(html_path.name)
+                return orig_extract(html_path, assets_out, written_assets)
+
+            add_report(source, 'third', end=3, summary='第三天')
+            with patch.object(report_site, '_stream_extract_html', side_effect=spy_extract):
+                third_result = report_site.build_site(source, output)
+            self.assertEqual(third_result['reports'], 3)
+            self.assertEqual(seen_paths, ['third.html'])
+
+            # Modifying an existing report HTML rebuilds only that report.
+            seen_paths.clear()
+            (source / 'first.html').write_text(
+                '<!doctype html><html><head></head><body><p>更新后的第一天</p></body></html>',
+                encoding='utf-8',
+            )
+            with patch.object(report_site, '_stream_extract_html', side_effect=spy_extract):
+                report_site.build_site(source, output)
+            self.assertEqual(seen_paths, ['first.html'])
+            self.assertIn('更新后的第一天', (output / 'reports/first.html').read_text(encoding='utf-8'))
+
+    def test_stream_extract_large_base64_and_ignores_report_data_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / 'reports', root / 'site'
+            source.mkdir()
+            large_bytes = b'PNGDATA_' * 20000  # ~160 KB (> 64 KB spill threshold)
+            b64_large = base64.b64encode(large_bytes).decode('ascii')
+            wrapped_large = '\n'.join(b64_large[i:i + 76] for i in range(0, len(b64_large), 76))
+            secret_img = base64.b64encode(b'secret-only-inside-script').decode('ascii')
+            pad_prefix = '<!-- ' + ('x' * (1024 * 1024 - 40)) + ' -->'
+            html_text = (
+                '<!doctype html><html><head>'
+                '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:">'
+                '</head><body>'
+                + pad_prefix
+                + '<img src="data:image/png;base64,' + wrapped_large + '">'
+                + '<script id="wechatagent-report-data" type="application/json">'
+                  '{"img":"data:image/png;base64,' + secret_img + '"}</script>'
+                '</body></html>'
+            )
+            add_report(source, 'chunked', end=1, html_text=html_text)
+            result = report_site.build_site(source, output)
+            large_digest = hashlib.sha256(large_bytes).hexdigest()
+            secret_digest = hashlib.sha256(b'secret-only-inside-script').hexdigest()
+            self.assertIn(f'assets/{large_digest}.png', result['files'])
+            self.assertNotIn(f'assets/{secret_digest}.png', result['files'])
+            self.assertEqual((output / f'assets/{large_digest}.png').read_bytes(), large_bytes)
+            page = (output / 'reports/chunked.html').read_text(encoding='utf-8')
+            self.assertIn(f'../assets/{large_digest}.png', page)
+            self.assertNotIn('secret-only-inside-script', page)
+            self.assertIn("img-src 'self'; font-src 'self'", page)
+
 if __name__ == "__main__":
     unittest.main()

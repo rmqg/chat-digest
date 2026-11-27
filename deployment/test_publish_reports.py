@@ -193,6 +193,19 @@ class PublishReportsTests(unittest.TestCase):
         media.write_bytes(b'referenced image changed')
         self.assertNotEqual(first, publish_reports._input_stamp(self.root, config, [str(media)]))
 
+    def test_low_memory_defers_before_building(self):
+        self._real_report('first')
+        with patch.object(publish_reports, '_mem_available_kb', return_value=200000), \
+             patch.object(publish_reports, 'build_site', side_effect=AssertionError('should defer before building')), \
+             patch.object(publish_reports, '_rsync_stage', side_effect=AssertionError('should defer before uploading')):
+            result = publish_reports.publish_reports(self.config_path, root=self.root, min_avail_kb=512000)
+        self.assertEqual(result, {
+            'status': 'deferred',
+            'reason': 'low_memory',
+            'available_kb': 200000,
+            'min_available_kb': 512000,
+        })
+
 
 if __name__ == "__main__":
     unittest.main()
