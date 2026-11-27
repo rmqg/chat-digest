@@ -44,7 +44,7 @@ _REPORT_DATA_ID_BYTES_RE = re.compile(
     re.IGNORECASE,
 )
 _SCRIPT_CLOSE_BYTES_RE = re.compile(rb"</script\s*>", re.IGNORECASE)
-_BASE64_BODY_BYTES = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n")
+_BASE64_BODY_RE = re.compile(rb"[A-Za-z0-9+/=\r\n]+")
 _STREAM_CHUNK_SIZE = 1024 * 1024
 _SPILL_THRESHOLD = 64 * 1024
 _RECENT_MTIME_WINDOW_NS = 5_000_000_000
@@ -306,10 +306,8 @@ def _stream_extract_html(html_path: Path, assets_out: Path, written_assets: set[
                     if not buf and eof:
                         out_chunks.append(finish_b64())
                         break
-                    end_idx = 0
-                    buf_len = len(buf)
-                    while end_idx < buf_len and buf[end_idx] in _BASE64_BODY_BYTES:
-                        end_idx += 1
+                    body_match = _BASE64_BODY_RE.match(buf)
+                    end_idx = body_match.end() if body_match is not None else 0
                     if end_idx:
                         b64_state["has_body"] = True
                         if not feed_b64_bytes(buf[:end_idx]):
